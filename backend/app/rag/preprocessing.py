@@ -5,13 +5,12 @@ import unicodedata
 from pathlib import Path
 from typing import Iterable
 
+from .chunker import DEFAULT_CHUNK_OVERLAP, DEFAULT_CHUNK_SIZE, chunk_text
 from .loader import PDF_PATH, load_pdf
 
 
 BASE_DIR = Path(__file__).resolve().parents[3]
 PROCESSED_PATH = BASE_DIR / "data" / "processed" / "handbook_k67.jsonl"
-DEFAULT_CHUNK_SIZE = 1_000
-DEFAULT_CHUNK_OVERLAP = 150
 MIN_PAGE_TEXT_LENGTH = 20
 
 _PAGE_HEADER_PATTERN = re.compile(
@@ -79,53 +78,6 @@ def clean_page_text(text: str) -> str:
 
     flush_paragraph()
     return "\n\n".join(paragraphs).strip()
-
-
-def _find_chunk_end(text: str, start: int, max_chars: int) -> int:
-    hard_end = min(start + max_chars, len(text))
-    if hard_end == len(text):
-        return hard_end
-
-    minimum_end = start + max_chars // 2
-    candidates = [
-        text.rfind(separator, minimum_end, hard_end)
-        for separator in ("\n\n", ". ", "; ", ": ", "\n", " ")
-    ]
-    best_break = max(candidates)
-    return best_break + 1 if best_break >= minimum_end else hard_end
-
-
-def chunk_text(
-    text: str,
-    chunk_size: int = DEFAULT_CHUNK_SIZE,
-    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
-) -> list[str]:
-    """Split text at natural boundaries with a character-based overlap."""
-    if chunk_size <= 0:
-        raise ValueError("chunk_size must be greater than 0")
-    if chunk_overlap < 0 or chunk_overlap >= chunk_size:
-        raise ValueError("chunk_overlap must be between 0 and chunk_size - 1")
-
-    text = text.strip()
-    if not text:
-        return []
-
-    chunks: list[str] = []
-    start = 0
-
-    while start < len(text):
-        end = _find_chunk_end(text, start, chunk_size)
-        chunk = text[start:end].strip()
-        if chunk:
-            chunks.append(chunk)
-        if end >= len(text):
-            break
-
-        next_start = max(end - chunk_overlap, start + 1)
-        next_space = text.find(" ", next_start, min(next_start + 40, end))
-        start = next_space + 1 if next_space != -1 else next_start
-
-    return chunks
 
 
 def preprocess_pages(
