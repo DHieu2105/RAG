@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 
 const ICONS = {
@@ -49,15 +49,24 @@ const CONVERSATIONS_STORAGE_KEY = "uniguide-conversations";
 const ACTIVE_CONVERSATION_STORAGE_KEY = "uniguide-active-conversation";
 
 type Conversation = {
-  id: number;
+  id: string;
   title: string;
-  question: string;
-  answer: string | null;
+  messages: Message[];
 };
 
-const defaultConversations: Conversation[] = [
-  { id: 0, title: "Cảnh báo kết quả học tập", question: "Sinh viên bị cảnh báo học tập khi nào?", answer: null },
-];
+type Message = {
+  role: "user" | "assistant";
+  content: string;
+  sources?: Source[];
+};
+
+type Source = {
+  article: number | null;
+  clauses: number[];
+  page_start: number | null;
+};
+
+const defaultConversations: Conversation[] = [];
 
 function loadConversations(): Conversation[] {
   if (typeof window === "undefined") return defaultConversations;
@@ -67,21 +76,22 @@ function loadConversations(): Conversation[] {
 
   try {
     const parsedConversations = JSON.parse(savedConversations) as Conversation[];
-    return Array.isArray(parsedConversations) ? parsedConversations : defaultConversations;
+    return Array.isArray(parsedConversations) && parsedConversations.every((conversation) => (
+      typeof conversation.id === "string"
+      && typeof conversation.title === "string"
+      && Array.isArray(conversation.messages)
+    )) ? parsedConversations : defaultConversations;
   } catch {
     window.localStorage.removeItem(CONVERSATIONS_STORAGE_KEY);
     return defaultConversations;
   }
 }
 
-function loadActiveConversationId(): number | null {
-  if (typeof window === "undefined") return 0;
+function loadActiveConversationId(): string | null {
+  if (typeof window === "undefined") return null;
 
   const savedActiveConversationId = window.localStorage.getItem(ACTIVE_CONVERSATION_STORAGE_KEY);
-  if (savedActiveConversationId === null) return 0;
-
-  const parsedId = Number(savedActiveConversationId);
-  return Number.isNaN(parsedId) ? null : parsedId;
+  return savedActiveConversationId;
 }
 
 function Icon({ src, alt = "" }: { src: string; alt?: string }) {
@@ -99,9 +109,9 @@ function Sidebar({
 }: {
   open: boolean;
   conversations: Conversation[];
-  activeConversationId: number | null;
+  activeConversationId: string | null;
   onNewChat: () => void;
-  onSelectConversation: (id: number) => void;
+  onSelectConversation: (id: string) => void;
   onClose: () => void;
 }) {
   return (
@@ -157,33 +167,34 @@ function Topbar({ onOpenMenu, onNewChat }: { onOpenMenu: () => void; onNewChat: 
   );
 }
 
-function AssistantAnswer({ answer, dynamic = false }: { answer?: string; dynamic?: boolean }) {
+function AssistantAnswer({ answer, sources = [] }: { answer: string; sources?: Source[] }) {
   const [copied, setCopied] = useState(false);
-  const copyText = answer ?? "Theo Điều 11, sinh viên được cảnh báo kết quả học tập sau mỗi học kỳ chính khi vi phạm một trong các trường hợp theo quy định.";
 
   async function copyAnswer() {
-    await navigator.clipboard.writeText(copyText);
+    await navigator.clipboard.writeText(answer);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1500);
   }
 
   return (
-    <div className={`assistant-message ${dynamic ? "dynamic-answer" : ""}`}>
+    <div className="assistant-message dynamic-answer">
       <div className="assistant-avatar"><Icon src={ICONS.sparkLarge} /></div>
       <article className="answer-card">
         <div className="answer-title">
-          <h2>{dynamic ? "Câu trả lời từ UniGuide AI" : "Cảnh báo kết quả học tập"}</h2><span>Có nguồn dẫn</span>
+          <h2>Câu trả lời từ UniGuide AI</h2><span>{sources.length ? "Có nguồn dẫn" : "Không có nguồn dẫn"}</span>
         </div>
-        {dynamic ? <p className="dynamic-answer-text">{answer}</p> : (
-          <>
-            <p className="answer-summary">Theo Điều 11, sinh viên được cảnh báo kết quả học tập sau mỗi học kỳ chính khi vi phạm một trong các trường hợp sau:</p>
-            <div className="conditions">
-              <p><b>01</b><span>Không đăng ký đủ số tín chỉ tối thiểu theo quy định.</span></p>
-              <p><b>02</b><span>Điểm trung bình học kỳ dưới 0,8 ở học kỳ đầu hoặc<br />dưới 1,0 ở các học kỳ tiếp theo.</span></p>
-            </div>
-          </>
+        <p className="dynamic-answer-text">{answer}</p>
+        {sources.length > 0 && (
+          <div className="citation">
+            <Icon src={ICONS.bookCitation} />
+            <span>{sources.map((source) => {
+              const clauses = source.clauses.length ? `, Khoản ${source.clauses.join(", ")}` : "";
+              const article = source.article === null ? "Không rõ điều" : `Điều ${source.article}`;
+              const page = source.page_start === null ? "không rõ trang" : `Trang ${source.page_start}`;
+              return `${article}${clauses} · ${page}`;
+            }).join("  |  ")}</span>
+          </div>
         )}
-        <div className="citation"><Icon src={ICONS.bookCitation} /><span>Sổ tay K67&nbsp; · &nbsp;Điều 11, Khoản 1&nbsp; · &nbsp;Trang 23</span></div>
         <div className="answer-actions">
           <button type="button" onClick={copyAnswer}><Icon src={ICONS.copy} /><span>{copied ? "Đã sao chép" : "Sao chép"}</span></button>
           <span className="ai-note">Câu trả lời được tạo bởi AI, hãy đối chiếu quy định gốc.</span>
@@ -193,7 +204,7 @@ function AssistantAnswer({ answer, dynamic = false }: { answer?: string; dynamic
   );
 }
 
-function SourcePanel() {
+function SourcePanel({ sources }: { sources: Source[] }) {
   return (
     <aside className="source-panel" aria-label="Nguồn tham khảo">
       <div className="source-heading"><Icon src={ICONS.bookTitle} /><h2>Nguồn tham khảo</h2></div>
@@ -204,12 +215,20 @@ function SourcePanel() {
         <p>Trường Đại học Giao thông Vận tải<br />Bộ dữ liệu quy chế &amp; học vụ</p>
         <div><strong>PDF · 97 trang</strong><span>Nguồn nội bộ</span></div>
       </div>
-      <p className="source-label">ĐOẠN TÀI LIỆU LIÊN QUAN</p>
-      <div className="citation-card">
-        <div className="citation-card-title"><b>01</b><strong>Điều 11 · Cảnh báo học tập</strong></div>
-        <p>Sau mỗi học kỳ chính, sinh viên được cảnh báo kết quả học tập nếu vi phạm...</p>
-        <div className="source-tags"><span>Trang 23</span><strong>Khớp cao nhất</strong></div>
-      </div>
+      {sources.length > 0 && (
+        <>
+          <p className="source-label">ĐOẠN TÀI LIỆU LIÊN QUAN</p>
+          <div className="citation-card">
+            {sources.map((source, index) => (
+              <div className="citation-card-title" key={`${source.article}-${source.page_start}-${index}`}>
+                <b>{String(index + 1).padStart(2, "0")}</b>
+                <strong>{source.article === null ? "Nguồn tài liệu" : `Điều ${source.article}`} · {source.page_start === null ? "Không rõ trang" : `Trang ${source.page_start}`}</strong>
+              </div>
+            ))}
+            <div className="source-tags"><span>{sources.length} nguồn</span><strong>Khớp cao nhất</strong></div>
+          </div>
+        </>
+      )}
       <div className="accuracy-card">
         <div><Icon src={ICONS.shieldBlue} /><strong>Minh bạch nguồn dẫn</strong></div>
         <p>Mỗi câu trả lời gắn Điều, Khoản và trang PDF để bạn tự đối chiếu thông tin khi cần.</p>
@@ -221,16 +240,23 @@ function SourcePanel() {
 export default function Home() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [question, setQuestion] = useState("");
-  const [activeConversationId, setActiveConversationId] = useState<number | null>(0);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>(defaultConversations);
   const [storageReady, setStorageReady] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const requestId = useRef(0);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      setConversations(loadConversations());
-      setActiveConversationId(loadActiveConversationId());
+      const savedConversations = loadConversations();
+      const savedActiveConversationId = loadActiveConversationId();
+      setConversations(savedConversations);
+      setActiveConversationId(
+        savedActiveConversationId && savedConversations.some((conversation) => conversation.id === savedActiveConversationId)
+          ? savedActiveConversationId
+          : null,
+      );
       setStorageReady(true);
     }, 0);
 
@@ -249,6 +275,7 @@ export default function Home() {
   }, [conversations, activeConversationId, storageReady]);
 
   function startNewChat() {
+    requestId.current += 1;
     setActiveConversationId(null);
     setQuestion("");
     setError(null);
@@ -256,7 +283,8 @@ export default function Home() {
     setMenuOpen(false);
   }
 
-  function selectConversation(id: number) {
+  function selectConversation(id: string) {
+    requestId.current += 1;
     setActiveConversationId(id);
     setQuestion("");
     setError(null);
@@ -271,27 +299,39 @@ export default function Home() {
     setQuestion("");
     setError(null);
     setLoading(true);
-    const conversationId = Date.now();
+    const currentRequestId = ++requestId.current;
+    const conversationId = activeConversationId ?? crypto.randomUUID();
     setActiveConversationId(conversationId);
-    setConversations((current) => [
-      ...current,
-      { id: conversationId, title: value, question: value, answer: null },
-    ]);
+    const conversation = conversations.find((item) => item.id === conversationId);
+    const history = conversation?.messages ?? [];
+    setConversations((current) => {
+      if (current.some((item) => item.id === conversationId)) {
+        return current.map((item) => item.id === conversationId
+          ? { ...item, messages: [...item.messages, { role: "user", content: value }] }
+          : item);
+      }
+      return [...current, { id: conversationId, title: value, messages: [{ role: "user", content: value }] }];
+    });
     try {
       const response = await fetch(API_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: value }),
+        body: JSON.stringify({ question: value, history }),
       });
       if (!response.ok) throw new Error("Request failed");
-      const payload = (await response.json()) as { answer: string };
-      setConversations((current) => current.map((conversation) => (
-        conversation.id === conversationId ? { ...conversation, answer: payload.answer } : conversation
+      const payload = (await response.json()) as { answer: string; sources?: Source[] };
+      setConversations((current) => current.map((item) => (
+        item.id === conversationId ? {
+          ...item,
+          messages: [...item.messages, { role: "assistant", content: payload.answer, sources: payload.sources ?? [] }],
+        } : item
       )));
     } catch {
-      setError("Không thể kết nối tới máy chủ. Hãy kiểm tra backend và thử lại.");
+      if (requestId.current === currentRequestId) {
+        setError("Không thể kết nối tới máy chủ. Hãy kiểm tra backend và thử lại.");
+      }
     } finally {
-      setLoading(false);
+      if (requestId.current === currentRequestId) setLoading(false);
     }
   }
 
@@ -328,14 +368,13 @@ export default function Home() {
                   return (
                     <>
                       <div className="date-divider">HÔM NAY</div>
-                      <div className="user-message"><p>{conversation.question}</p></div>
-                      {conversation.id === 0 ? <AssistantAnswer /> : (
-                        <>
-                          {loading && <div className="loading-message">UniGuide AI đang tra cứu tài liệu…</div>}
-                          {conversation.answer && <AssistantAnswer answer={conversation.answer} dynamic />}
-                          {error && <div className="error-message">{error}</div>}
-                        </>
-                      )}
+                      {conversation.messages.map((message, index) => message.role === "user" ? (
+                        <div className="user-message" key={`${conversation.id}-${index}`}><p>{message.content}</p></div>
+                      ) : (
+                        <AssistantAnswer key={`${conversation.id}-${index}`} answer={message.content} sources={message.sources} />
+                      ))}
+                      {loading && <div className="loading-message">UniGuide AI đang tra cứu tài liệu…</div>}
+                      {error && <div className="error-message">{error}</div>}
                     </>
                   );
                 })()
@@ -349,7 +388,11 @@ export default function Home() {
               <p>UniGuide AI sử dụng nội dung Sổ tay K67 để tham khảo, không thay thế thông báo chính thức của Nhà trường.</p>
             </form>
           </section>
-          <SourcePanel />
+          <SourcePanel sources={(() => {
+            const conversation = conversations.find((item) => item.id === activeConversationId);
+            const lastAssistant = conversation?.messages.slice().reverse().find((message) => message.role === "assistant");
+            return lastAssistant?.sources ?? [];
+          })()} />
         </div>
       </section>
     </main>

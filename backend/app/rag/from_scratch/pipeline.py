@@ -50,6 +50,23 @@ def chat(
     document_vectors: list[list[float]],
 ) -> str:
     """Retrieve relevant chunks and use Ollama to answer the question."""
+    result = chat_with_sources(
+        question,
+        chunks,
+        vectorizer,
+        document_vectors,
+    )
+    return result["answer"]
+
+
+def chat_with_sources(
+    question: str,
+    chunks: list[dict],
+    vectorizer: TfidfVectorizer,
+    document_vectors: list[list[float]],
+    history: list[dict[str, str]] | None = None,
+) -> dict:
+    """Return an answer together with the retrieved source metadata."""
     results = ask(
         question,
         chunks,
@@ -57,10 +74,23 @@ def chat(
         document_vectors,
     )
     if not results:
-        return "Không tìm thấy thông tin liên quan trong sổ tay."
+        return {"answer": "Không tìm thấy thông tin liên quan trong sổ tay.", "sources": []}
 
     context = build_context(results)
-    return generate_answer(question, context)
+    answer = (
+        generate_answer(question, context, history)
+        if history is not None
+        else generate_answer(question, context)
+    )
+    sources = [
+        {
+            "article": chunk.get("article"),
+            "clauses": chunk.get("clauses", []),
+            "page_start": chunk.get("page_start"),
+        }
+        for chunk in results
+    ]
+    return {"answer": answer, "sources": sources}
 
 
 if __name__ == "__main__":
