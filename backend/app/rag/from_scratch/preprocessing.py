@@ -1,5 +1,12 @@
 """Basic text preprocessing utilities implemented from scratch."""
 
+import re
+
+
+ROMAN_NUMERAL_PATTERN = re.compile(
+    r"M{0,3}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})"
+)
+
 
 def normalize_line(line: str) -> str:
     """Trim a line and collapse consecutive whitespace to one space."""
@@ -36,6 +43,20 @@ def is_article_heading(line: str) -> bool:
     return article_number.isdigit()
 
 
+def is_chapter_heading(line: str) -> bool:
+    """Return whether a line starts with a Roman-numbered chapter label."""
+    normalized_line = normalize_line(line)
+    parts = normalized_line.split()
+
+    if len(parts) < 2 or parts[0].casefold() != "chương":
+        return False
+
+    chapter_number = parts[1].removesuffix(".").removesuffix(":").upper()
+    return bool(chapter_number) and bool(
+        ROMAN_NUMERAL_PATTERN.fullmatch(chapter_number)
+    )
+
+
 def is_clause_start(line: str) -> bool:
     """Return whether a line starts with a numbered clause such as '5.'."""
     normalized_line = normalize_line(line)
@@ -64,6 +85,7 @@ def merge_lines(lines: list[str]) -> str:
 def preprocess_pages(pages: list[dict]) -> list[dict]:
     """Convert extracted PDF pages into article and clause-aware blocks."""
     blocks: list[dict] = []
+    current_chapter_title: str | None = None
     current_article: int | None = None
     current_article_title: str | None = None
     current_clause: int | None = None
@@ -76,16 +98,17 @@ def preprocess_pages(pages: list[dict]) -> list[dict]:
 
         text = merge_lines(current_lines)
         if text:
-            blocks.append(
-                {
-                    "article": current_article,
-                    "article_title": current_article_title,
-                    "clause": current_clause,
-                    "page_start": current_page_start,
-                    "page_end": current_page_end,
-                    "text": text,
-                }
-            )
+            block = {
+                "article": current_article,
+                "article_title": current_article_title,
+                "clause": current_clause,
+                "page_start": current_page_start,
+                "page_end": current_page_end,
+                "text": text,
+            }
+            if current_chapter_title is not None:
+                block["chapter_title"] = current_chapter_title
+            blocks.append(block)
 
         current_lines = []
         current_page_start = None
@@ -98,6 +121,14 @@ def preprocess_pages(pages: list[dict]) -> list[dict]:
         for raw_line in text.splitlines():
             line = normalize_line(raw_line)
             if not line or is_footer(line):
+                continue
+
+            if is_chapter_heading(line):
+                save_current_block()
+                current_chapter_title = line
+                current_article = None
+                current_article_title = None
+                current_clause = None
                 continue
 
             if is_article_heading(line):

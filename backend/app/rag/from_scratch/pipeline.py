@@ -1,9 +1,12 @@
 """End-to-end indexing pipeline built from the from-scratch components."""
 
+import sys
+
 from app.rag.loader import PDF_PATH, load_pdf
 
 from .chunker import structure_chunk
 from .embeddings import TfidfVectorizer
+from .index_store import INDEX_PATH, load_index, save_index
 from .preprocessing import preprocess_pages
 from .retriever import top_k_search
 
@@ -39,9 +42,17 @@ def ask(
 
 
 if __name__ == "__main__":
-    print("Đang xây dựng index...")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
 
-    chunks, vectorizer, vectors = build_index()
+    if INDEX_PATH.exists():
+        print("Đang tải index đã lưu...")
+        chunks, vectorizer, vectors = load_index()
+    else:
+        print("Đang xây dựng index...")
+        chunks, vectorizer, vectors = build_index()
+        save_index(chunks, vectorizer, vectors)
+        print("Đã lưu index tại:", INDEX_PATH)
 
     print("Tổng số chunks:", len(chunks))
     print("Tổng số vectors:", len(vectors))

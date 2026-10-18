@@ -67,6 +67,8 @@ def structure_chunk(
         }
         if "article_title" in current_blocks[0]:
             chunk["article_title"] = current_blocks[0]["article_title"]
+        if "chapter_title" in current_blocks[0]:
+            chunk["chapter_title"] = current_blocks[0]["chapter_title"]
         chunks.append(chunk)
         current_blocks = []
         current_length = 0
@@ -99,6 +101,8 @@ def structure_chunk(
                 }
                 if "article_title" in block:
                     chunk["article_title"] = block["article_title"]
+                if "chapter_title" in block:
+                    chunk["chapter_title"] = block["chapter_title"]
                 chunks.append(chunk)
             continue
 

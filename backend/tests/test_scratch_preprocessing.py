@@ -1,5 +1,6 @@
 from app.rag.from_scratch.preprocessing import (
     is_article_heading,
+    is_chapter_heading,
     is_clause_start,
     is_footer,
     merge_lines,
@@ -31,6 +32,18 @@ def test_is_article_heading() -> None:
     assert not is_article_heading("5. Khối lượng học tập")
     assert not is_article_heading("Sinh viên đăng ký tín chỉ")
     assert not is_article_heading("")
+
+
+def test_is_chapter_heading() -> None:
+    assert is_chapter_heading("Chương I")
+    assert is_chapter_heading("CHƯƠNG II")
+    assert is_chapter_heading("Chương III ĐÁNH GIÁ KẾT QUẢ HỌC TẬP")
+    assert is_chapter_heading("  Chương   IV.  ")
+    assert not is_chapter_heading("Sinh viên học chương trình đào tạo")
+    assert not is_chapter_heading("Điều 7. Đăng ký học tập")
+    assert not is_chapter_heading("Chương trình đào tạo")
+    assert not is_chapter_heading("Chương IIII không hợp lệ")
+    assert not is_chapter_heading("")
 
 
 def test_is_clause_start() -> None:
@@ -118,12 +131,43 @@ def test_preprocess_pages_keeps_state_across_pages() -> None:
     assert blocks[1]["page_start"] == 17
 
 
+def test_preprocess_pages_uses_chapter_as_boundary() -> None:
+    pages = [
+        {
+            "page_number": 18,
+            "text": (
+                "Điều 8. Quyền của sinh viên\n"
+                "7. Sinh viên được thông báo kết quả.\n"
+                "Chương III ĐÁNH GIÁ KẾT QUẢ HỌC TẬP\n"
+                "Điều 9. Đánh giá học phần\n"
+                "1. Kết quả được tính theo quy định."
+            ),
+        }
+    ]
+
+    blocks = preprocess_pages(pages)
+
+    assert len(blocks) == 2
+    assert blocks[0]["article"] == 8
+    assert blocks[0]["clause"] == 7
+    assert "Chương III" not in blocks[0]["text"]
+    assert "chapter_title" not in blocks[0]
+    assert blocks[1]["article"] == 9
+    assert blocks[1]["clause"] == 1
+    assert blocks[1]["chapter_title"] == (
+        "Chương III ĐÁNH GIÁ KẾT QUẢ HỌC TẬP"
+    )
+    assert "Chương III" not in blocks[1]["text"]
+
+
 if __name__ == "__main__":
     test_normalize_line()
     test_is_footer()
     test_is_article_heading()
+    test_is_chapter_heading()
     test_is_clause_start()
     test_merge_lines()
     test_preprocess_pages()
     test_preprocess_pages_keeps_state_across_pages()
+    test_preprocess_pages_uses_chapter_as_boundary()
     print("All tests passed!")
