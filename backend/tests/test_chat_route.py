@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
 from fastapi import HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.main import app
 from app.routes.chat import chat_endpoint, get_rag_index
@@ -14,6 +15,17 @@ def test_openapi_contains_chat_endpoint() -> None:
     assert operation["responses"]["200"]["content"][
         "application/json"
     ]["schema"] == {"$ref": "#/components/schemas/ChatResponse"}
+
+
+def test_cors_allows_nextjs_development_origin() -> None:
+    middleware = next(
+        item for item in app.user_middleware if item.cls is CORSMiddleware
+    )
+
+    assert middleware.kwargs["allow_origins"] == ["http://localhost:3000"]
+    assert middleware.kwargs["allow_credentials"] is False
+    assert middleware.kwargs["allow_methods"] == ["GET", "POST"]
+    assert middleware.kwargs["allow_headers"] == ["Content-Type"]
 
 
 def test_chat_endpoint_uses_cached_index() -> None:
@@ -62,6 +74,7 @@ def test_chat_endpoint_hides_internal_errors() -> None:
 
 if __name__ == "__main__":
     test_openapi_contains_chat_endpoint()
+    test_cors_allows_nextjs_development_origin()
     test_chat_endpoint_uses_cached_index()
     test_chat_endpoint_hides_internal_errors()
     print("All tests passed!")
