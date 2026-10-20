@@ -1,4 +1,14 @@
-"""Character-based chunking algorithms implemented from scratch."""
+"""Character and document-structure-aware chunking algorithms."""
+
+
+STRUCTURE_FIELDS = (
+    "part",
+    "part_title",
+    "chapter",
+    "chapter_title",
+    "article",
+    "article_title",
+)
 
 
 def fixed_size_chunk(
@@ -31,12 +41,33 @@ def fixed_size_chunk(
     return chunks
 
 
+def _structure_key(block: dict) -> tuple:
+    """Identify the structural container that a block belongs to."""
+    return tuple(block.get(field) for field in STRUCTURE_FIELDS)
+
+
+def _copy_structure(source: dict, target: dict) -> None:
+    for field in STRUCTURE_FIELDS:
+        value = source.get(field)
+        if value is not None:
+            target[field] = value
+
+
+def _clause_numbers(blocks: list[dict]) -> list[int]:
+    clauses: list[int] = []
+    for block in blocks:
+        clause = block.get("clause")
+        if clause is not None and clause not in clauses:
+            clauses.append(clause)
+    return clauses
+
+
 def structure_chunk(
     blocks: list[dict],
     max_size: int = 1000,
     overlap: int = 150,
 ) -> list[dict]:
-    """Group clause blocks without crossing article or size boundaries."""
+    """Group blocks without crossing part, chapter, article, or size boundaries."""
     if max_size <= 0:
         raise ValueError("max_size must be greater than 0")
     if overlap < 0 or overlap >= max_size:
@@ -52,31 +83,32 @@ def structure_chunk(
         if not current_blocks:
             return
 
+        page_starts = [
+            block["page_start"]
+            for block in current_blocks
+            if block.get("page_start") is not None
+        ]
+        page_ends = [
+            block["page_end"]
+            for block in current_blocks
+            if block.get("page_end") is not None
+        ]
         chunk = {
-            "article": current_blocks[0]["article"],
-            "clauses": [
-                block["clause"]
-                for block in current_blocks
-                if block.get("clause") is not None
-            ],
-            "page_start": current_blocks[0]["page_start"],
-            "page_end": current_blocks[-1]["page_end"],
+            "article": current_blocks[0].get("article"),
+            "clauses": _clause_numbers(current_blocks),
+            "page_start": min(page_starts) if page_starts else None,
+            "page_end": max(page_ends) if page_ends else None,
             "text": "\n\n".join(
                 block["text"] for block in current_blocks
             ),
         }
-        if "article_title" in current_blocks[0]:
-            chunk["article_title"] = current_blocks[0]["article_title"]
-        if "chapter_title" in current_blocks[0]:
-            chunk["chapter_title"] = current_blocks[0]["chapter_title"]
+        _copy_structure(current_blocks[0], chunk)
         chunks.append(chunk)
         current_blocks = []
         current_length = 0
 
     for block in blocks:
         text = block["text"]
-        article = block["article"]
-
         if not text:
             continue
 
@@ -89,31 +121,24 @@ def structure_chunk(
                 overlap=overlap,
             ):
                 chunk = {
-                    "article": article,
-                    "clauses": (
-                        [block["clause"]]
-                        if block.get("clause") is not None
-                        else []
-                    ),
-                    "page_start": block["page_start"],
-                    "page_end": block["page_end"],
+                    "article": block.get("article"),
+                    "clauses": _clause_numbers([block]),
+                    "page_start": block.get("page_start"),
+                    "page_end": block.get("page_end"),
                     "text": text_part,
                 }
-                if "article_title" in block:
-                    chunk["article_title"] = block["article_title"]
-                if "chapter_title" in block:
-                    chunk["chapter_title"] = block["chapter_title"]
+                _copy_structure(block, chunk)
                 chunks.append(chunk)
             continue
 
         separator_length = 2 if current_blocks else 0
         combined_length = current_length + separator_length + len(text)
-        article_changed = (
+        structure_changed = (
             bool(current_blocks)
-            and current_blocks[0]["article"] != article
+            and _structure_key(current_blocks[0]) != _structure_key(block)
         )
 
-        if article_changed or combined_length > max_size:
+        if structure_changed or combined_length > max_size:
             save_current_chunk()
             separator_length = 0
 

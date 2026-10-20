@@ -4,13 +4,21 @@ import sys
 
 from app.rag.loader import PDF_PATH, load_pdf
 
+from .bm25 import BM25Index
 from .chunker import structure_chunk
 from .context_builder import build_context
 from .embeddings import TfidfVectorizer
 from .index_store import INDEX_PATH, load_index, save_index
 from .llm import generate_answer
 from .preprocessing import preprocess_pages
-from .retriever import top_k_search
+from .query_processing import generate_search_queries
+from .reranker import rerank_results
+from .retriever import reciprocal_rank_fusion, top_k_search
+
+
+DEFAULT_TOP_K = 5
+DEFAULT_CANDIDATE_K = 15
+ORIGINAL_QUERY_WEIGHT = 1.1
 
 
 def build_index():
@@ -32,14 +40,137 @@ def ask(
     chunks: list[dict],
     vectorizer: TfidfVectorizer,
     document_vectors: list[list[float]],
+    top_k: int = DEFAULT_TOP_K,
 ) -> list[dict]:
-    """Retrieve the five chunks most relevant to a question."""
+    """Run the original single-query TF-IDF retriever."""
     query_vector = vectorizer.transform([question])[0]
     return top_k_search(
         query_vector,
         document_vectors,
         chunks,
-        top_k=5,
+        top_k=top_k,
+    )
+
+
+def ask_with_query_processing(
+    question: str,
+    chunks: list[dict],
+    vectorizer: TfidfVectorizer,
+    document_vectors: list[list[float]],
+    top_k: int = DEFAULT_TOP_K,
+    candidate_k: int = DEFAULT_CANDIDATE_K,
+) -> list[dict]:
+    """Retrieve with deterministic query expansion and weighted RRF."""
+    queries = generate_search_queries(question)
+    if len(queries) <= 1:
+        return ask(
+            question,
+            chunks,
+            vectorizer,
+            document_vectors,
+            top_k=top_k,
+        )
+
+    ranked_results = []
+    for query in queries:
+        query_vector = vectorizer.transform([query])[0]
+        ranked_results.append(
+            top_k_search(
+                query_vector,
+                document_vectors,
+                chunks,
+                top_k=candidate_k,
+            )
+        )
+
+    weights = [ORIGINAL_QUERY_WEIGHT] + [1.0] * (len(queries) - 1)
+    return reciprocal_rank_fusion(
+        ranked_results,
+        weights=weights,
+        top_k=top_k,
+        source_score_name="tfidf_score",
+    )
+
+
+def ask_bm25(
+    question: str,
+    chunks: list[dict],
+    bm25_index: BM25Index,
+    top_k: int = DEFAULT_TOP_K,
+) -> list[dict]:
+    """Run the original single-query BM25 retriever."""
+    return bm25_index.search(question, chunks, top_k=top_k)
+
+
+def ask_bm25_with_query_processing(
+    question: str,
+    chunks: list[dict],
+    bm25_index: BM25Index,
+    top_k: int = DEFAULT_TOP_K,
+    candidate_k: int = DEFAULT_CANDIDATE_K,
+) -> list[dict]:
+    """Retrieve with BM25, deterministic query expansion, and RRF."""
+    queries = generate_search_queries(question)
+    if len(queries) <= 1:
+        return ask_bm25(
+            question,
+            chunks,
+            bm25_index,
+            top_k=top_k,
+        )
+
+    ranked_results = [
+        bm25_index.search(query, chunks, top_k=candidate_k)
+        for query in queries
+    ]
+    weights = [ORIGINAL_QUERY_WEIGHT] + [1.0] * (len(queries) - 1)
+    return reciprocal_rank_fusion(
+        ranked_results,
+        weights=weights,
+        top_k=top_k,
+        source_score_name="bm25_score",
+    )
+
+
+def ask_hybrid(
+    question: str,
+    chunks: list[dict],
+    vectorizer: TfidfVectorizer,
+    document_vectors: list[list[float]],
+    bm25_index: BM25Index,
+    top_k: int = DEFAULT_TOP_K,
+    candidate_k: int = DEFAULT_CANDIDATE_K,
+) -> list[dict]:
+    """Fuse query-processed TF-IDF and BM25 rankings."""
+    tfidf_results = ask_with_query_processing(
+        question,
+        chunks,
+        vectorizer,
+        document_vectors,
+        top_k=candidate_k,
+        candidate_k=candidate_k,
+    )
+    bm25_results = ask_bm25_with_query_processing(
+        question,
+        chunks,
+        bm25_index,
+        top_k=candidate_k,
+        candidate_k=candidate_k,
+    )
+    fused = reciprocal_rank_fusion(
+        [tfidf_results, bm25_results],
+        top_k=candidate_k,
+        source_score_name="hybrid_source_score",
+    )
+    search_queries = generate_search_queries(question)
+    if len(search_queries) <= 1:
+        return fused[:top_k]
+
+    return rerank_results(
+        question,
+        fused,
+        search_queries,
+        top_k=top_k,
     )
 
 
@@ -67,7 +198,7 @@ def chat_with_sources(
     history: list[dict[str, str]] | None = None,
 ) -> dict:
     """Return an answer together with the retrieved source metadata."""
-    results = ask(
+    results = ask_with_query_processing(
         question,
         chunks,
         vectorizer,
