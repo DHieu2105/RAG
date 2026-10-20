@@ -1,7 +1,72 @@
 from unittest.mock import patch
 
 from app.rag.from_scratch.embeddings import TfidfVectorizer
-from app.rag.from_scratch.pipeline import chat
+from app.rag.from_scratch.pipeline import (
+    _select_cited_sources,
+    _select_sources,
+    chat,
+)
+
+
+def test_select_cited_sources_keeps_only_model_selected_clauses() -> None:
+    results = [
+        {
+            "part": "2.1",
+            "article": 11,
+            "clauses": [1, 2, 3, 4],
+            "page_start": 23,
+            "page_end": 23,
+        },
+        {
+            "article": 19,
+            "clauses": [1],
+            "page_start": 31,
+            "page_end": 31,
+        },
+    ]
+
+    sources = _select_cited_sources(
+        results,
+        [{"document": 1, "clauses": [2]}],
+    )
+
+    assert len(sources) == 1
+    assert sources[0]["article"] == 11
+    assert sources[0]["clauses"] == [2]
+
+
+def test_select_sources_limits_and_deduplicates_sources() -> None:
+    results = [
+        {
+            "part": "2.1",
+            "article": 11,
+            "clauses": [1],
+            "page_start": 23,
+            "page_end": 23,
+        },
+        {
+            "part": "2.1",
+            "article": 11,
+            "clauses": [2],
+            "page_start": 23,
+            "page_end": 23,
+        },
+        {
+            "part": "2.1",
+            "article": 13,
+            "clauses": [1],
+            "page_start": 27,
+            "page_end": 27,
+        },
+    ]
+
+    sources = _select_sources(results)
+
+    assert len(sources) == 2
+    assert sources[0]["article"] == 11
+    assert sources[0]["clauses"] == [1, 2]
+    assert sources[1]["article"] == 13
+    assert sources[0]["page_end"] == 23
 
 
 def test_chat_builds_context_and_generates_answer() -> None:

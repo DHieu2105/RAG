@@ -20,9 +20,15 @@ class ChatRequest(BaseModel):
 class ChatSource(BaseModel):
     """A source reference returned by the retriever."""
 
+    part: str | None = None
+    chapter: str | None = None
     article: int | None = None
+    part_title: str | None = None
+    chapter_title: str | None = None
+    article_title: str | None = None
     clauses: list[int] = Field(default_factory=list)
     page_start: int | None = None
+    page_end: int | None = None
 
 
 class ChatResponse(BaseModel):

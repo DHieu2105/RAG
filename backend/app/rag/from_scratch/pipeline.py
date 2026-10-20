@@ -4,12 +4,12 @@ import sys
 
 from app.rag.loader import PDF_PATH, load_pdf
 
-from .bm25 import BM25Index
+from .bm25 import BM25Index, build_bm25_index
 from .chunker import structure_chunk
 from .context_builder import build_context
 from .embeddings import TfidfVectorizer
 from .index_store import INDEX_PATH, load_index, save_index
-from .llm import generate_answer
+from .llm import generate_answer, generate_grounded_answer
 from .preprocessing import preprocess_pages
 from .query_processing import generate_search_queries
 from .reranker import rerank_results
@@ -19,6 +19,12 @@ from .retriever import reciprocal_rank_fusion, top_k_search
 DEFAULT_TOP_K = 5
 DEFAULT_CANDIDATE_K = 15
 ORIGINAL_QUERY_WEIGHT = 1.1
+HYBRID_RETRIEVAL_MODE = "hybrid"
+LEGACY_RETRIEVAL_MODE = "tfidf_qp"
+SUPPORTED_RETRIEVAL_MODES = {
+    HYBRID_RETRIEVAL_MODE,
+    LEGACY_RETRIEVAL_MODE,
+}
 
 
 def build_index():
@@ -179,15 +185,54 @@ def chat(
     chunks: list[dict],
     vectorizer: TfidfVectorizer,
     document_vectors: list[list[float]],
+    bm25_index: BM25Index | None = None,
+    retrieval_mode: str = HYBRID_RETRIEVAL_MODE,
 ) -> str:
     """Retrieve relevant chunks and use Ollama to answer the question."""
-    result = chat_with_sources(
+    results = retrieve_for_chat(
         question,
         chunks,
         vectorizer,
         document_vectors,
+        bm25_index=bm25_index,
+        retrieval_mode=retrieval_mode,
     )
-    return result["answer"]
+    if not results:
+        return "Không tìm thấy thông tin liên quan trong sổ tay."
+    return generate_answer(question, build_context(results))
+
+
+def retrieve_for_chat(
+    question: str,
+    chunks: list[dict],
+    vectorizer: TfidfVectorizer,
+    document_vectors: list[list[float]],
+    bm25_index: BM25Index | None = None,
+    retrieval_mode: str = HYBRID_RETRIEVAL_MODE,
+) -> list[dict]:
+    """Retrieve chat context with Hybrid or the rollback TF-IDF mode."""
+    if retrieval_mode == LEGACY_RETRIEVAL_MODE:
+        return ask_with_query_processing(
+            question,
+            chunks,
+            vectorizer,
+            document_vectors,
+        )
+    if retrieval_mode != HYBRID_RETRIEVAL_MODE:
+        supported = ", ".join(sorted(SUPPORTED_RETRIEVAL_MODES))
+        raise ValueError(
+            f"Unsupported retrieval mode: {retrieval_mode}. "
+            f"Expected one of: {supported}."
+        )
+
+    active_bm25_index = bm25_index or build_bm25_index(chunks)
+    return ask_hybrid(
+        question,
+        chunks,
+        vectorizer,
+        document_vectors,
+        active_bm25_index,
+    )
 
 
 def chat_with_sources(
@@ -196,32 +241,88 @@ def chat_with_sources(
     vectorizer: TfidfVectorizer,
     document_vectors: list[list[float]],
     history: list[dict[str, str]] | None = None,
+    bm25_index: BM25Index | None = None,
+    retrieval_mode: str = HYBRID_RETRIEVAL_MODE,
 ) -> dict:
     """Return an answer together with the retrieved source metadata."""
-    results = ask_with_query_processing(
+    results = retrieve_for_chat(
         question,
         chunks,
         vectorizer,
         document_vectors,
+        bm25_index=bm25_index,
+        retrieval_mode=retrieval_mode,
     )
     if not results:
         return {"answer": "Không tìm thấy thông tin liên quan trong sổ tay.", "sources": []}
 
     context = build_context(results)
-    answer = (
-        generate_answer(question, context, history)
-        if history is not None
-        else generate_answer(question, context)
-    )
-    sources = [
-        {
+    grounded = generate_grounded_answer(question, context, history)
+    sources = _select_cited_sources(results, grounded.get("citations", []))
+    return {"answer": grounded["answer"], "sources": sources}
+
+
+def _select_cited_sources(
+    results: list[dict],
+    citations: list[object],
+) -> list[dict]:
+    """Map model citations to retrieved chunks without widening their scope."""
+    selected: list[dict] = []
+    seen: dict[tuple[object, ...], dict] = {}
+
+    for citation in citations:
+        if not isinstance(citation, dict):
+            raise ValueError("Citation phải là một object")
+        document = citation.get("document")
+        clauses = citation.get("clauses")
+        if (
+            not isinstance(document, int)
+            or isinstance(document, bool)
+            or not isinstance(clauses, list)
+            or not all(isinstance(clause, int) and not isinstance(clause, bool) for clause in clauses)
+            or document < 1
+            or document > len(results)
+        ):
+            raise ValueError("Citation chứa document hoặc clauses không hợp lệ")
+
+        chunk = results[document - 1]
+        source = {
+            "part": chunk.get("part"),
+            "chapter": chunk.get("chapter"),
             "article": chunk.get("article"),
-            "clauses": chunk.get("clauses", []),
+            "part_title": chunk.get("part_title"),
+            "chapter_title": chunk.get("chapter_title"),
+            "article_title": chunk.get("article_title"),
+            "clauses": sorted(set(clauses)),
             "page_start": chunk.get("page_start"),
+            "page_end": chunk.get("page_end"),
         }
-        for chunk in results
+        identity = (
+            source["part"],
+            source["chapter"],
+            source["article"],
+            source["page_start"],
+            source["page_end"],
+        )
+        existing = seen.get(identity)
+        if existing is not None:
+            existing["clauses"] = sorted(
+                set(existing["clauses"]) | set(source["clauses"])
+            )
+            continue
+        seen[identity] = source
+        selected.append(source)
+
+    return selected
+
+
+def _select_sources(results: list[dict]) -> list[dict]:
+    """Backward-compatible source projection for legacy callers."""
+    citations = [
+        {"document": index, "clauses": chunk.get("clauses", [])}
+        for index, chunk in enumerate(results, start=1)
     ]
-    return {"answer": answer, "sources": sources}
+    return _select_cited_sources(results, citations)
 
 
 if __name__ == "__main__":
@@ -241,6 +342,8 @@ if __name__ == "__main__":
     print("Tổng số vectors:", len(vectors))
     print("Kích thước vocabulary:", len(vectorizer.vocabulary))
 
+    bm25_index = build_bm25_index(chunks)
+
     while True:
         question = input("\nNhập câu hỏi (exit để thoát): ").strip()
         if question.lower() == "exit":
@@ -254,6 +357,7 @@ if __name__ == "__main__":
             chunks,
             vectorizer,
             vectors,
+            bm25_index=bm25_index,
         )
         print("\n===== UNIguide AI =====")
         print(answer)

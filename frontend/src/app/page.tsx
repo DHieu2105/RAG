@@ -61,9 +61,15 @@ type Message = {
 };
 
 type Source = {
+  part: string | null;
+  chapter: string | null;
   article: number | null;
+  part_title: string | null;
+  chapter_title: string | null;
+  article_title: string | null;
   clauses: number[];
   page_start: number | null;
+  page_end: number | null;
 };
 
 const defaultConversations: Conversation[] = [];
@@ -189,9 +195,17 @@ function AssistantAnswer({ answer, sources = [] }: { answer: string; sources?: S
             <Icon src={ICONS.bookCitation} />
             <span>{sources.map((source) => {
               const clauses = source.clauses.length ? `, Khoản ${source.clauses.join(", ")}` : "";
-              const article = source.article === null ? "Không rõ điều" : `Điều ${source.article}`;
-              const page = source.page_start === null ? "không rõ trang" : `Trang ${source.page_start}`;
-              return `${article}${clauses} · ${page}`;
+              const structure = [
+                source.part ? `Phần ${source.part}` : "",
+                source.chapter ? `Chương ${source.chapter}` : "",
+                source.article === null ? "" : `Điều ${source.article}`,
+              ].filter(Boolean).join(", ");
+              const page = source.page_start === null
+                ? ""
+                : source.page_end !== null && source.page_end !== source.page_start
+                  ? `Trang ${source.page_start}-${source.page_end}`
+                  : `Trang ${source.page_start}`;
+              return [structure, clauses.replace(/^, /, ""), page].filter(Boolean).join(", ");
             }).join("  |  ")}</span>
           </div>
         )}
@@ -222,7 +236,16 @@ function SourcePanel({ sources }: { sources: Source[] }) {
             {sources.map((source, index) => (
               <div className="citation-card-title" key={`${source.article}-${source.page_start}-${index}`}>
                 <b>{String(index + 1).padStart(2, "0")}</b>
-                <strong>{source.article === null ? "Nguồn tài liệu" : `Điều ${source.article}`} · {source.page_start === null ? "Không rõ trang" : `Trang ${source.page_start}`}</strong>
+                <strong>
+                  {source.part ? `Phần ${source.part} · ` : ""}
+                  {source.article === null ? "Nguồn tài liệu" : `Điều ${source.article}`}
+                  {" · "}
+                  {source.page_start === null
+                    ? "Không rõ trang"
+                    : source.page_end !== null && source.page_end !== source.page_start
+                      ? `Trang ${source.page_start}-${source.page_end}`
+                      : `Trang ${source.page_start}`}
+                </strong>
               </div>
             ))}
             <div className="source-tags"><span>{sources.length} nguồn</span><strong>Khớp cao nhất</strong></div>
