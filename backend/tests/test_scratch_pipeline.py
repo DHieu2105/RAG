@@ -4,6 +4,7 @@ from app.rag.from_scratch.embeddings import TfidfVectorizer
 from app.rag.from_scratch.pipeline import (
     _select_cited_sources,
     _select_sources,
+    _validate_claim_coverage,
     chat,
 )
 
@@ -16,6 +17,7 @@ def test_select_cited_sources_keeps_only_model_selected_clauses() -> None:
             "clauses": [1, 2, 3, 4],
             "page_start": 23,
             "page_end": 23,
+            "text": "1. Cảnh báo.\n\n2. Ba lần cảnh báo liên tiếp thì bị buộc thôi học.\n\n3. Thông báo.\n\n4. Bảo lưu.",
         },
         {
             "article": 19,
@@ -27,12 +29,107 @@ def test_select_cited_sources_keeps_only_model_selected_clauses() -> None:
 
     sources = _select_cited_sources(
         results,
-        [{"document": 1, "clauses": [2]}],
+        [
+            {
+                "claim": "Ba lần cảnh báo liên tiếp thì bị buộc thôi học.",
+                "document": 1,
+                "clauses": [2],
+                "evidence": "Ba lần cảnh báo liên tiếp thì bị buộc thôi học.",
+            }
+        ],
     )
 
     assert len(sources) == 1
     assert sources[0]["article"] == 11
     assert sources[0]["clauses"] == [2]
+    assert sources[0]["claims"] == [
+        "Ba lần cảnh báo liên tiếp thì bị buộc thôi học."
+    ]
+    assert sources[0]["evidence"] == [
+        "Ba lần cảnh báo liên tiếp thì bị buộc thôi học."
+    ]
+
+
+def test_select_cited_sources_rejects_clause_outside_chunk() -> None:
+    results = [
+        {
+            "article": 11,
+            "clauses": [1, 2],
+            "page_start": 23,
+            "page_end": 23,
+            "text": "1. Ngưỡng cảnh báo.\n\n2. Ba lần cảnh báo.",
+        }
+    ]
+
+    try:
+        _select_cited_sources(
+            results,
+            [
+                {
+                    "claim": "Một claim.",
+                    "document": 1,
+                    "clauses": [4],
+                    "evidence": "Nội dung không tồn tại.",
+                }
+            ],
+        )
+    except ValueError as error:
+        assert "không thuộc tài liệu" in str(error)
+        return
+
+    raise AssertionError("Expected ValueError to be raised")
+
+
+def test_select_cited_sources_rejects_evidence_from_wrong_clause() -> None:
+    results = [
+        {
+            "article": 11,
+            "clauses": [1, 2],
+            "page_start": 23,
+            "page_end": 23,
+            "text": (
+                "1. Điểm dưới 0,8 ở học kỳ đầu thì bị cảnh báo.\n\n"
+                "2. Ba lần cảnh báo liên tiếp thì bị buộc thôi học."
+            ),
+        }
+    ]
+
+    try:
+        _select_cited_sources(
+            results,
+            [
+                {
+                    "claim": "Ba lần cảnh báo thì bị buộc thôi học.",
+                    "document": 1,
+                    "clauses": [2],
+                    "evidence": "Điểm dưới 0,8 ở học kỳ đầu thì bị cảnh báo.",
+                }
+            ],
+        )
+    except ValueError as error:
+        assert "Evidence không xuất hiện" in str(error)
+        return
+
+    raise AssertionError("Expected ValueError to be raised")
+
+
+def test_claim_coverage_rejects_uncited_answer_sentence() -> None:
+    answer = "Ngưỡng cảnh báo là 0,8. Ba lần cảnh báo thì bị thôi học."
+    citations = [
+        {
+            "claim": "Ngưỡng cảnh báo là 0,8.",
+            "document": 1,
+            "clauses": [1],
+        }
+    ]
+
+    try:
+        _validate_claim_coverage(answer, citations)
+    except ValueError as error:
+        assert "chưa được gắn citation" in str(error)
+        return
+
+    raise AssertionError("Expected ValueError to be raised")
 
 
 def test_select_sources_limits_and_deduplicates_sources() -> None:

@@ -1,6 +1,7 @@
 import unicodedata
 
 from app.rag.from_scratch.query_processing import (
+    generate_answer_requirements,
     generate_search_queries,
     matching_rules,
     normalize_query,
@@ -42,6 +43,32 @@ def test_generates_bounded_search_queries_and_keeps_original() -> None:
     )
     assert "buộc thôi học do kết quả học tập yếu" in queries
     assert "cảnh báo kết quả học tập" in queries
+
+
+def test_expands_registration_into_rules_and_instructions() -> None:
+    queries = generate_search_queries("Đăng ký tín chỉ")
+
+    assert queries[0] == "Đăng ký tín chỉ"
+    assert any("hướng dẫn đăng ký học" == query for query in queries)
+    assert any("khối lượng học tập" in query for query in queries)
+
+
+def test_registration_answer_requirements_cover_separate_claims() -> None:
+    requirements = generate_answer_requirements("Đăng ký tín chỉ")
+
+    assert any("mục hướng dẫn đăng ký học" in item for item in requirements)
+    assert any("giới hạn tín chỉ" in item for item in requirements)
+    assert any("hủy hoặc rút học phần" in item for item in requirements)
+
+
+def test_low_score_answer_requirements_preserve_warning_chain() -> None:
+    requirements = generate_answer_requirements(
+        "Điểm thấp quá có bị đuổi học không?"
+    )
+
+    assert any("điểm thấp một lần" in item for item in requirements)
+    assert any("ngưỡng điểm" in item for item in requirements)
+    assert any("số lần cảnh báo" in item for item in requirements)
 
 
 def test_expands_generic_official_dismissal_question() -> None:

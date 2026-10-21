@@ -1,5 +1,6 @@
 """End-to-end indexing pipeline built from the from-scratch components."""
 
+import re
 import sys
 
 from app.rag.loader import PDF_PATH, load_pdf
@@ -11,7 +12,10 @@ from .embeddings import TfidfVectorizer
 from .index_store import INDEX_PATH, load_index, save_index
 from .llm import generate_answer, generate_grounded_answer
 from .preprocessing import preprocess_pages
-from .query_processing import generate_search_queries
+from .query_processing import (
+    generate_answer_requirements,
+    generate_search_queries,
+)
 from .reranker import rerank_results
 from .retriever import reciprocal_rank_fusion, top_k_search
 
@@ -257,9 +261,86 @@ def chat_with_sources(
         return {"answer": "Không tìm thấy thông tin liên quan trong sổ tay.", "sources": []}
 
     context = build_context(results)
-    grounded = generate_grounded_answer(question, context, history)
-    sources = _select_cited_sources(results, grounded.get("citations", []))
+    grounded = generate_grounded_answer(
+        question,
+        context,
+        history,
+        answer_requirements=generate_answer_requirements(question),
+    )
+    _validate_claim_coverage(grounded["answer"], grounded["citations"])
+    sources = _select_cited_sources(results, grounded["citations"])
     return {"answer": grounded["answer"], "sources": sources}
+
+
+def _normalized_text(value: str) -> str:
+    """Normalize whitespace for exact claim-to-answer coverage checks."""
+    return " ".join(value.casefold().split())
+
+
+def _normalized_evidence(value: str) -> str:
+    """Normalize typographic punctuation without changing evidence words."""
+    punctuation = str.maketrans(
+        {
+            "“": '"',
+            "”": '"',
+            "„": '"',
+            "‘": "'",
+            "’": "'",
+            "–": "-",
+            "—": "-",
+        }
+    )
+    return _normalized_text(value.translate(punctuation))
+
+
+def _clause_sections(text: str) -> dict[int, str]:
+    """Split a structured chunk into its top-level numbered clauses."""
+    matches = list(re.finditer(r"(?m)^\s*(\d+)\.\s+", text))
+    sections: dict[int, str] = {}
+    for index, match in enumerate(matches):
+        end = (
+            matches[index + 1].start()
+            if index + 1 < len(matches)
+            else len(text)
+        )
+        sections[int(match.group(1))] = text[match.start():end].strip()
+    return sections
+
+
+def _answer_sentences(answer: str) -> list[str]:
+    """Return non-empty answer sentences used by citation coverage checks."""
+    return [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", answer)
+        if sentence.strip()
+    ]
+
+
+def _validate_claim_coverage(answer: str, citations: list[object]) -> None:
+    """Require every answer sentence to be represented by a cited claim."""
+    if not citations:
+        return
+
+    normalized_answer = _normalized_text(answer)
+    normalized_claims: list[str] = []
+    for citation in citations:
+        if not isinstance(citation, dict):
+            raise ValueError("Citation phải là một object")
+        claim = citation.get("claim")
+        if not isinstance(claim, str) or not claim.strip():
+            raise ValueError("Citation thiếu claim hợp lệ")
+        normalized_claim = _normalized_text(claim)
+        if normalized_claim not in normalized_answer:
+            raise ValueError("Claim được trích dẫn không xuất hiện trong answer")
+        normalized_claims.append(normalized_claim)
+
+    for sentence in _answer_sentences(answer):
+        normalized_sentence = _normalized_text(sentence)
+        if not any(
+            normalized_sentence in claim or claim in normalized_sentence
+            for claim in normalized_claims
+        ):
+            raise ValueError("Answer chứa một ý chưa được gắn citation")
 
 
 def _select_cited_sources(
@@ -275,17 +356,66 @@ def _select_cited_sources(
             raise ValueError("Citation phải là một object")
         document = citation.get("document")
         clauses = citation.get("clauses")
+        claim = citation.get("claim")
+        evidence = citation.get("evidence")
+        legacy_projection = claim is None and evidence is None
         if (
             not isinstance(document, int)
             or isinstance(document, bool)
             or not isinstance(clauses, list)
-            or not all(isinstance(clause, int) and not isinstance(clause, bool) for clause in clauses)
+            or not all(
+                isinstance(clause, int) and not isinstance(clause, bool)
+                for clause in clauses
+            )
             or document < 1
             or document > len(results)
+            or (
+                not legacy_projection
+                and (
+                    not isinstance(evidence, str)
+                    or not evidence.strip()
+                )
+            )
         ):
             raise ValueError("Citation chứa document hoặc clauses không hợp lệ")
 
         chunk = results[document - 1]
+        available_clauses = chunk.get("clauses")
+        if available_clauses is None:
+            available_clause = chunk.get("clause")
+            available_clauses = (
+                [available_clause] if available_clause is not None else []
+            )
+        available_clause_set = set(available_clauses)
+        cited_clause_set = set(clauses)
+        if (
+            (available_clause_set and not cited_clause_set)
+            or not cited_clause_set.issubset(available_clause_set)
+            or (not legacy_projection and len(cited_clause_set) > 1)
+        ):
+            raise ValueError(
+                "Citation chứa khoản không thuộc tài liệu được viện dẫn"
+            )
+
+        if not legacy_projection:
+            chunk_text = chunk.get("text")
+            if not isinstance(chunk_text, str):
+                raise ValueError("Tài liệu được viện dẫn không có nội dung")
+            evidence_scope = chunk_text
+            if cited_clause_set:
+                clause = next(iter(cited_clause_set))
+                evidence_scope = _clause_sections(chunk_text).get(clause, "")
+                if not evidence_scope:
+                    raise ValueError(
+                        "Không xác định được nội dung của khoản viện dẫn"
+                    )
+            if _normalized_evidence(evidence) not in _normalized_evidence(
+                evidence_scope
+            ):
+                raise ValueError(
+                    "Evidence không xuất hiện trong đúng tài liệu và khoản viện dẫn"
+                )
+
         source = {
             "part": chunk.get("part"),
             "chapter": chunk.get("chapter"),
@@ -296,6 +426,10 @@ def _select_cited_sources(
             "clauses": sorted(set(clauses)),
             "page_start": chunk.get("page_start"),
             "page_end": chunk.get("page_end"),
+            "claims": [claim] if isinstance(claim, str) and claim.strip() else [],
+            "evidence": (
+                [evidence.strip()] if isinstance(evidence, str) else []
+            ),
         }
         identity = (
             source["part"],
@@ -309,6 +443,12 @@ def _select_cited_sources(
             existing["clauses"] = sorted(
                 set(existing["clauses"]) | set(source["clauses"])
             )
+            for source_claim in source["claims"]:
+                if source_claim not in existing["claims"]:
+                    existing["claims"].append(source_claim)
+            for source_evidence in source["evidence"]:
+                if source_evidence not in existing["evidence"]:
+                    existing["evidence"].append(source_evidence)
             continue
         seen[identity] = source
         selected.append(source)
@@ -319,7 +459,10 @@ def _select_cited_sources(
 def _select_sources(results: list[dict]) -> list[dict]:
     """Backward-compatible source projection for legacy callers."""
     citations = [
-        {"document": index, "clauses": chunk.get("clauses", [])}
+        {
+            "document": index,
+            "clauses": chunk.get("clauses", []),
+        }
         for index, chunk in enumerate(results, start=1)
     ]
     return _select_cited_sources(results, citations)

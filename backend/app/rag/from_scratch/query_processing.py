@@ -21,6 +21,16 @@ class QueryExpansionRule:
 
 TERM_RULES = (
     QueryExpansionRule(
+        name="course_registration",
+        aliases=("đăng ký tín chỉ", "đăng ký học phần"),
+        canonical="đăng ký học",
+        context_any=("đăng ký", "tín chỉ", "học phần", "học"),
+        related_queries=(
+            "hướng dẫn đăng ký học",
+            "khối lượng học tập đăng ký trong học kỳ chính",
+        ),
+    ),
+    QueryExpansionRule(
         name="academic_dismissal",
         aliases=("đuổi học", "đuổi khỏi trường"),
         canonical="buộc thôi học",
@@ -87,6 +97,39 @@ def matching_rules(question: str) -> list[QueryExpansionRule]:
             matches.append(rule)
 
     return matches
+
+
+def generate_answer_requirements(question: str) -> list[str]:
+    """Return intent-level coverage checks without supplying answer facts."""
+    rule_names = {rule.name for rule in matching_rules(question)}
+    requirements: list[str] = []
+
+    if "course_registration" in rule_names:
+        requirements.extend(
+            (
+                "Tạo đúng một claim nêu cách đăng ký từ đúng mục hướng dẫn "
+                "đăng ký học.",
+                "Tạo đúng một claim nêu giới hạn tín chỉ của học kỳ chính và "
+                "ngoại lệ gắn trực tiếp nếu tài liệu có.",
+                "Không tạo claim khác về thời điểm chi tiết, hủy hoặc rút "
+                "học phần khi câu hỏi không hỏi.",
+            )
+        )
+
+    if {
+        "academic_dismissal",
+        "weak_academic_results",
+    }.issubset(rule_names):
+        requirements.extend(
+            (
+                "Mở đầu bằng việc trả lời điểm thấp một lần có trực tiếp dẫn "
+                "tới buộc thôi học hay không.",
+                "Nêu riêng các ngưỡng điểm dẫn tới cảnh báo học tập.",
+                "Nêu riêng số lần cảnh báo liên tiếp dẫn tới buộc thôi học.",
+            )
+        )
+
+    return requirements
 
 
 def _replace_phrase(query: str, phrase: str, replacement: str) -> str:

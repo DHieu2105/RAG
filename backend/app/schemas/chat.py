@@ -29,6 +29,8 @@ class ChatSource(BaseModel):
     clauses: list[int] = Field(default_factory=list)
     page_start: int | None = None
     page_end: int | None = None
+    claims: list[str] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
 
 
 class ChatResponse(BaseModel):
