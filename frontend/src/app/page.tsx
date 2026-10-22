@@ -10,17 +10,14 @@ const ICONS = {
   brandDot: "/icons/brand-dot.svg",
   chat: "/icons/chat.svg",
   chatActive: "/icons/chat-active.svg",
-  chevron: "/icons/chevron.svg",
   copy: "/icons/copy.svg",
   help: "/icons/help.svg",
-  more: "/icons/more.svg",
   online: "/icons/online-dot.svg",
   plus: "/icons/plus.svg",
   send: "/icons/send.svg",
-  shieldBlue: "/icons/shield-blue.svg",
-  shieldLight: "/icons/shield-light.svg",
   spark: "/icons/spark.svg",
   sparkLarge: "/icons/spark-large.svg",
+  trash: "/icons/trash.svg",
 } as const;
 
 const ICON_SIZES: Record<string, [number, number]> = {
@@ -30,17 +27,14 @@ const ICON_SIZES: Record<string, [number, number]> = {
   [ICONS.brandDot]: [7, 7],
   [ICONS.chat]: [16, 16],
   [ICONS.chatActive]: [16, 16],
-  [ICONS.chevron]: [16, 16],
   [ICONS.copy]: [14, 14],
   [ICONS.help]: [18, 18],
-  [ICONS.more]: [16, 16],
   [ICONS.online]: [8, 8],
   [ICONS.plus]: [18, 18],
   [ICONS.send]: [20, 20],
-  [ICONS.shieldBlue]: [17, 17],
-  [ICONS.shieldLight]: [17, 17],
   [ICONS.spark]: [13, 13],
   [ICONS.sparkLarge]: [21, 21],
+  [ICONS.trash]: [15, 15],
 };
 
 const suggestions = ["Đăng ký tín chỉ", "Cảnh báo học tập", "Xét tốt nghiệp"];
@@ -70,6 +64,8 @@ type Source = {
   clauses: number[];
   page_start: number | null;
   page_end: number | null;
+  claims?: string[];
+  evidence?: string[];
 };
 
 const defaultConversations: Conversation[] = [];
@@ -111,6 +107,7 @@ function Sidebar({
   activeConversationId,
   onNewChat,
   onSelectConversation,
+  onDeleteConversation,
   onClose,
 }: {
   open: boolean;
@@ -118,6 +115,7 @@ function Sidebar({
   activeConversationId: string | null;
   onNewChat: () => void;
   onSelectConversation: (id: string) => void;
+  onDeleteConversation: (id: string) => void;
   onClose: () => void;
 }) {
   return (
@@ -132,29 +130,100 @@ function Sidebar({
         <p className="sidebar-label">LỊCH SỬ TRÒ CHUYỆN</p>
         <nav className="history-list" aria-label="Lịch sử trò chuyện">
           {conversations.map((conversation) => (
-            <button
-              className={`history-item ${conversation.id === activeConversationId ? "active" : ""}`}
-              type="button"
+            <div
+              className={`history-row ${conversation.id === activeConversationId ? "active" : ""}`}
               key={conversation.id}
-              onClick={() => onSelectConversation(conversation.id)}
             >
-              <Icon src={conversation.id === activeConversationId ? ICONS.chatActive : ICONS.chat} />
-              <span>{conversation.title}</span>
-            </button>
+              <button
+                className="history-item"
+                type="button"
+                onClick={() => onSelectConversation(conversation.id)}
+              >
+                <Icon src={conversation.id === activeConversationId ? ICONS.chatActive : ICONS.chat} />
+                <span>{conversation.title}</span>
+              </button>
+              <button
+                className="delete-history"
+                type="button"
+                aria-label={`Xóa cuộc trò chuyện: ${conversation.title}`}
+                title="Xóa cuộc trò chuyện"
+                onClick={() => {
+                  if (window.confirm(`Xóa cuộc trò chuyện “${conversation.title}”?`)) {
+                    onDeleteConversation(conversation.id);
+                  }
+                }}
+              >
+                <Icon src={ICONS.trash} />
+              </button>
+            </div>
           ))}
         </nav>
-        <div className="sidebar-spacer" />
-        <div className="verified-box">
-          <div><Icon src={ICONS.shieldLight} /><strong>Dữ liệu có kiểm chứng</strong></div>
-          <p>Nội dung được tra cứu từ<br />Sổ tay sinh viên K67 (UTC).</p>
-        </div>
-        <div className="profile">
-          <div className="profile-avatar">SV</div>
-          <div className="profile-copy"><strong>Sinh viên UTC</strong><span>K67 · Đại học GTVT</span></div>
-          <Icon src={ICONS.more} />
-        </div>
       </aside>
     </>
+  );
+}
+
+function HelpMenu({ onNewChat }: { onNewChat: () => void }) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+
+    function closeOnOutsideClick(event: MouseEvent) {
+      if (event.target instanceof Node && !menuRef.current?.contains(event.target)) setOpen(false);
+    }
+
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  return (
+    <div className="help-menu" ref={menuRef}>
+      <button
+        className="help-button"
+        type="button"
+        aria-label={open ? "Đóng trợ giúp" : "Mở trợ giúp"}
+        aria-expanded={open}
+        aria-controls="help-popover"
+        onClick={() => setOpen((current) => !current)}
+      >
+        <Icon src={ICONS.help} />
+      </button>
+      {open && (
+        <div className="help-popover" id="help-popover" role="dialog" aria-label="Hướng dẫn sử dụng">
+          <div className="help-popover-title">
+            <div className="help-popover-icon"><Icon src={ICONS.help} /></div>
+            <div><strong>Trợ giúp nhanh</strong><span>Cách sử dụng UniGuide AI</span></div>
+          </div>
+          <p>Hãy nhập câu hỏi cụ thể về học vụ, quy chế hoặc quyền lợi sinh viên.</p>
+          <div className="help-examples">
+            <span>Ví dụ câu hỏi</span>
+            <p>“Điều kiện đăng ký tín chỉ là gì?”</p>
+            <p>“Khi nào sinh viên bị cảnh báo học tập?”</p>
+          </div>
+          <button
+            className="help-new-chat"
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              onNewChat();
+            }}
+          >
+            <Icon src={ICONS.plus} />
+            <span>Bắt đầu câu hỏi mới</span>
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -164,10 +233,10 @@ function Topbar({ onOpenMenu, onNewChat }: { onOpenMenu: () => void; onNewChat: 
       <button className="mobile-menu" type="button" aria-label="Mở menu" onClick={onOpenMenu}><span /><span /><span /></button>
       <div className="mobile-logo">U</div>
       <div className="mobile-brand"><strong>UniGuide AI</strong><span>TRỢ LÝ SINH VIÊN UTC</span></div>
-      <div className="breadcrumbs"><span>TRANG CHỦ</span><Icon src={ICONS.chevron} /><strong>Trợ lý học vụ</strong></div>
+      <div className="breadcrumbs"><strong>Trợ lý học vụ</strong></div>
       <div className="topbar-spacer" />
-      <div className="scope-pill"><Icon src={ICONS.online} /><span>Sổ tay sinh viên K67</span></div>
-      <button className="help-button" type="button" aria-label="Trợ giúp"><Icon src={ICONS.help} /></button>
+      <div className="scope-pill"><Icon src={ICONS.online} /><span>Sổ tay sinh viên K67 Online</span></div>
+      <HelpMenu onNewChat={onNewChat} />
       <button className="mobile-new-chat" type="button" aria-label="Cuộc trò chuyện mới" onClick={onNewChat}><Icon src={ICONS.plus} /></button>
     </header>
   );
@@ -225,37 +294,58 @@ function SourcePanel({ sources }: { sources: Source[] }) {
       <p className="source-subtitle">Tài liệu được sử dụng để tạo câu trả lời.</p>
       <div className="document-card">
         <div className="document-icon"><Icon src={ICONS.bookCard} /></div>
-        <h3>Sổ tay sinh viên K67</h3>
-        <p>Trường Đại học Giao thông Vận tải<br />Bộ dữ liệu quy chế &amp; học vụ</p>
-        <div><strong>PDF · 97 trang</strong><span>Nguồn nội bộ</span></div>
+        <div className="document-copy">
+          <h3>Sổ tay sinh viên K67</h3>
+          <p>Trường Đại học Giao thông Vận tải</p>
+        </div>
+        <div className="document-meta"><strong>PDF · 97 trang</strong><span>Nguồn nội bộ</span></div>
       </div>
       {sources.length > 0 && (
         <>
-          <p className="source-label">ĐOẠN TÀI LIỆU LIÊN QUAN</p>
+          <div className="source-section-heading">
+            <p className="source-label">ĐOẠN TÀI LIỆU LIÊN QUAN</p>
+            <span>{sources.length} nguồn</span>
+          </div>
           <div className="citation-card">
-            {sources.map((source, index) => (
-              <div className="citation-card-title" key={`${source.article}-${source.page_start}-${index}`}>
-                <b>{String(index + 1).padStart(2, "0")}</b>
-                <strong>
-                  {source.part ? `Phần ${source.part} · ` : ""}
-                  {source.article === null ? "Nguồn tài liệu" : `Điều ${source.article}`}
-                  {" · "}
-                  {source.page_start === null
-                    ? "Không rõ trang"
-                    : source.page_end !== null && source.page_end !== source.page_start
-                      ? `Trang ${source.page_start}-${source.page_end}`
-                      : `Trang ${source.page_start}`}
-                </strong>
-              </div>
-            ))}
-            <div className="source-tags"><span>{sources.length} nguồn</span><strong>Khớp cao nhất</strong></div>
+            {sources.map((source, index) => {
+              const articleName = source.article_title
+                ?? (source.article === null ? "Nguồn tài liệu" : `Điều ${source.article}`);
+              const page = source.page_start === null
+                ? "Không rõ trang"
+                : source.page_end !== null && source.page_end !== source.page_start
+                  ? `Trang ${source.page_start}-${source.page_end}`
+                  : `Trang ${source.page_start}`;
+              const clauses = source.clauses?.length ? `Khoản ${source.clauses.join(", ")}` : null;
+              const evidence = source.evidence?.filter(Boolean) ?? [];
+
+              return (
+                <details className="citation-item" key={`${source.article}-${source.page_start}-${index}`}>
+                  <summary>
+                    <b>{String(index + 1).padStart(2, "0")}</b>
+                    <span className="citation-summary-copy">
+                      <strong>{articleName}</strong>
+                      <small>{[source.part ? `Phần ${source.part}` : null, clauses, page].filter(Boolean).join(" · ")}</small>
+                    </span>
+                    <span className="citation-toggle" aria-hidden="true">⌄</span>
+                  </summary>
+                  <div className="citation-detail">
+                    {(source.chapter_title || clauses) && (
+                      <p className="citation-context">
+                        {[source.chapter_title, clauses].filter(Boolean).join(" · ")}
+                      </p>
+                    )}
+                    {evidence.length > 0 ? evidence.map((excerpt, excerptIndex) => (
+                      <blockquote key={`${index}-${excerptIndex}`}>{excerpt}</blockquote>
+                    )) : (
+                      <p className="citation-empty">Chưa có đoạn trích chi tiết cho nguồn này.</p>
+                    )}
+                  </div>
+                </details>
+              );
+            })}
           </div>
         </>
       )}
-      <div className="accuracy-card">
-        <div><Icon src={ICONS.shieldBlue} /><strong>Minh bạch nguồn dẫn</strong></div>
-        <p>Mỗi câu trả lời gắn Điều, Khoản và trang PDF để bạn tự đối chiếu thông tin khi cần.</p>
-      </div>
     </aside>
   );
 }
@@ -315,6 +405,18 @@ export default function Home() {
     setMenuOpen(false);
   }
 
+  function deleteConversation(id: string) {
+    setConversations((current) => current.filter((conversation) => conversation.id !== id));
+    if (activeConversationId !== id) return;
+
+    requestId.current += 1;
+    setActiveConversationId(null);
+    setQuestion("");
+    setError(null);
+    setLoading(false);
+    setMenuOpen(false);
+  }
+
   async function submitQuestion(event?: FormEvent) {
     event?.preventDefault();
     const value = question.trim();
@@ -366,6 +468,7 @@ export default function Home() {
         activeConversationId={activeConversationId}
         onNewChat={startNewChat}
         onSelectConversation={selectConversation}
+        onDeleteConversation={deleteConversation}
         onClose={() => setMenuOpen(false)}
       />
       <section className="main-app">
