@@ -15,7 +15,6 @@ GROUNDED_ANSWER_SCHEMA = {
     "properties": {
         "claims": {
             "type": "array",
-            "maxItems": 4,
             "items": {
                 "type": "object",
                 "properties": {
@@ -96,10 +95,11 @@ metadata đã kiểm tra.
   đó thành một điều kiện mới. Ví dụ nếu mức điểm thấp dẫn tới "cảnh báo" và
   nhiều lần cảnh báo mới dẫn tới "buộc thôi học", phải viết thành hai bước;
   không được nói mức điểm thấp lặp lại trực tiếp dẫn tới buộc thôi học.
-- Với câu hỏi chủ đề rất ngắn, trả lời tối đa 3 claim: cách thực hiện trực
-  tiếp, giới hạn bắt buộc chính và ngoại lệ gắn trực tiếp (nếu có). Không tự
-  mở rộng sang thời điểm chi tiết, hủy, rút, tốt nghiệp hay chủ đề kề bên nếu
-  người dùng không hỏi.
+- Với câu hỏi hẹp không yêu cầu liệt kê, ưu tiên tối đa 3 claim: cách thực hiện
+  trực tiếp, giới hạn bắt buộc chính và ngoại lệ gắn trực tiếp (nếu có). Nếu
+  câu hỏi yêu cầu liệt kê các đối tượng/trường hợp hoặc có các ý bắt buộc phải
+  bao phủ, không giới hạn số claim: phải tạo đủ claim có căn cứ cho toàn bộ các
+  nhóm được hỏi. Không tự mở rộng sang chủ đề kề bên nếu người dùng không hỏi.
 - Không tạo hai claim lặp lại cùng một kết luận bằng cách diễn đạt khác nhau.
 - `evidence` phải là một đoạn sao chép nguyên văn, liên tục từ đúng phần Nội
   dung của [Tài liệu N], đủ để chứng minh `text`; không diễn đạt lại evidence.

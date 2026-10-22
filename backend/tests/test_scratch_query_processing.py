@@ -3,6 +3,8 @@ import unicodedata
 from app.rag.from_scratch.query_processing import (
     generate_answer_requirements,
     generate_search_queries,
+    is_complete_list_question,
+    is_tuition_policy_question,
     matching_rules,
     normalize_query,
 )
@@ -69,6 +71,38 @@ def test_low_score_answer_requirements_preserve_warning_chain() -> None:
     assert any("điểm thấp một lần" in item for item in requirements)
     assert any("ngưỡng điểm" in item for item in requirements)
     assert any("số lần cảnh báo" in item for item in requirements)
+
+
+def test_tuition_question_expands_all_three_benefit_levels() -> None:
+    question = "Đối tượng nào được miễn, giảm học phí?"
+
+    queries = generate_search_queries(question)
+
+    assert queries[0] == question
+    assert "đối tượng được miễn 100% học phí không phải đóng học phí" in queries
+    assert "đối tượng được giảm 70% học phí" in queries
+    assert "đối tượng được giảm 50% học phí" in queries
+    assert is_complete_list_question(question)
+    assert is_tuition_policy_question(question)
+
+
+def test_tuition_answer_requirements_demand_complete_separate_groups() -> None:
+    requirements = generate_answer_requirements(
+        "Những đối tượng sinh viên nào được miễn học phí?"
+    )
+
+    assert any("sáu đối tượng" in item and "100%" in item for item in requirements)
+    assert any("70%" in item for item in requirements)
+    assert any("50%" in item for item in requirements)
+    assert any("trợ cấp xã hội" in item for item in requirements)
+
+
+def test_personal_tuition_question_does_not_require_full_policy_list() -> None:
+    question = "Em có được miễn học phí không?"
+
+    assert is_tuition_policy_question(question)
+    assert not is_complete_list_question(question)
+    assert generate_answer_requirements(question) == []
 
 
 def test_expands_generic_official_dismissal_question() -> None:

@@ -111,9 +111,11 @@ def test_generate_grounded_answer_returns_explicit_citations() -> None:
     }
     payload = json.loads(mocked_urlopen.call_args.args[0].data.decode("utf-8"))
     assert payload["format"] == GROUNDED_ANSWER_SCHEMA
+    assert "maxItems" not in payload["format"]["properties"]["claims"]
     assert payload["options"]["temperature"] == 0
     assert payload["think"] is False
     assert "danh sách claim độc lập" in payload["messages"][0]["content"]
+    assert "không giới hạn số claim" in payload["messages"][0]["content"]
     assert "chỉ dựa vào khoản 2 thì trả `[2]`" in (
         payload["messages"][0]["content"]
     )

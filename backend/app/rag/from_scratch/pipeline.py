@@ -15,6 +15,8 @@ from .preprocessing import preprocess_pages
 from .query_processing import (
     generate_answer_requirements,
     generate_search_queries,
+    is_complete_list_question,
+    is_tuition_policy_question,
 )
 from .reranker import rerank_results
 from .retriever import reciprocal_rank_fusion, top_k_search
@@ -22,6 +24,9 @@ from .retriever import reciprocal_rank_fusion, top_k_search
 
 DEFAULT_TOP_K = 5
 DEFAULT_CANDIDATE_K = 15
+MAX_CONTEXT_CHARS = 16_000
+MAX_CONTEXT_CHUNKS = 16
+MAX_GENERATION_ATTEMPTS = 2
 ORIGINAL_QUERY_WEIGHT = 1.1
 HYBRID_RETRIEVAL_MODE = "hybrid"
 LEGACY_RETRIEVAL_MODE = "tfidf_qp"
@@ -216,27 +221,114 @@ def retrieve_for_chat(
 ) -> list[dict]:
     """Retrieve chat context with Hybrid or the rollback TF-IDF mode."""
     if retrieval_mode == LEGACY_RETRIEVAL_MODE:
-        return ask_with_query_processing(
+        results = ask_with_query_processing(
             question,
             chunks,
             vectorizer,
             document_vectors,
         )
-    if retrieval_mode != HYBRID_RETRIEVAL_MODE:
+    elif retrieval_mode != HYBRID_RETRIEVAL_MODE:
         supported = ", ".join(sorted(SUPPORTED_RETRIEVAL_MODES))
         raise ValueError(
             f"Unsupported retrieval mode: {retrieval_mode}. "
             f"Expected one of: {supported}."
         )
+    else:
+        active_bm25_index = bm25_index or build_bm25_index(chunks)
+        results = ask_hybrid(
+            question,
+            chunks,
+            vectorizer,
+            document_vectors,
+            active_bm25_index,
+        )
 
-    active_bm25_index = bm25_index or build_bm25_index(chunks)
-    return ask_hybrid(
-        question,
-        chunks,
-        vectorizer,
-        document_vectors,
-        active_bm25_index,
+    return _expand_same_article_context(question, results, chunks)
+
+
+def _article_key(chunk: dict) -> tuple[object, object, object] | None:
+    """Identify an article without merging equal article numbers across parts."""
+    article = chunk.get("article")
+    if article is None:
+        return None
+    return (chunk.get("part"), chunk.get("chapter"), article)
+
+
+def _chunk_key(chunk: dict) -> tuple[object, ...]:
+    """Build a stable identity for in-memory chunks without requiring an id."""
+    article_key = _article_key(chunk) or (None, None, None)
+    return (
+        *article_key,
+        tuple(chunk.get("clauses") or []),
+        chunk.get("page_start"),
+        chunk.get("page_end"),
+        chunk.get("text"),
     )
+
+
+def _tuition_anchor(results: list[dict]) -> dict | None:
+    """Prefer the retrieved article that explicitly governs tuition relief."""
+    for field in ("article_title", "text"):
+        for chunk in results:
+            searchable = str(chunk.get(field) or "").casefold()
+            if "học phí" in searchable and (
+                "miễn" in searchable or "giảm" in searchable
+            ):
+                return chunk
+    return None
+
+
+def _expand_same_article_context(
+    question: str,
+    results: list[dict],
+    chunks: list[dict],
+    *,
+    max_chars: int = MAX_CONTEXT_CHARS,
+    max_chunks: int = MAX_CONTEXT_CHUNKS,
+) -> list[dict]:
+    """Add every chunk of the best-matching article for exhaustive questions."""
+    if (
+        not results
+        or not is_complete_list_question(question)
+        or max_chars <= 0
+        or max_chunks <= 0
+    ):
+        return results
+
+    anchor = (
+        _tuition_anchor(results)
+        if is_tuition_policy_question(question)
+        else None
+    )
+    if anchor is None:
+        anchor = next(
+            (result for result in results if _article_key(result) is not None),
+            None,
+        )
+    if anchor is None:
+        return results
+
+    anchor_key = _article_key(anchor)
+    siblings = [chunk for chunk in chunks if _article_key(chunk) == anchor_key]
+    candidates = [*siblings, *results]
+    expanded: list[dict] = []
+    seen: set[tuple[object, ...]] = set()
+    used_chars = 0
+
+    for chunk in candidates:
+        identity = _chunk_key(chunk)
+        if identity in seen:
+            continue
+        text = str(chunk.get("text") or "")
+        if expanded and used_chars + len(text) > max_chars:
+            continue
+        expanded.append(chunk)
+        seen.add(identity)
+        used_chars += len(text)
+        if len(expanded) >= max_chunks:
+            break
+
+    return expanded
 
 
 def chat_with_sources(
@@ -261,15 +353,39 @@ def chat_with_sources(
         return {"answer": "Không tìm thấy thông tin liên quan trong sổ tay.", "sources": []}
 
     context = build_context(results)
-    grounded = generate_grounded_answer(
-        question,
-        context,
-        history,
-        answer_requirements=generate_answer_requirements(question),
-    )
-    _validate_claim_coverage(grounded["answer"], grounded["citations"])
-    sources = _select_cited_sources(results, grounded["citations"])
-    return {"answer": grounded["answer"], "sources": sources}
+    answer_requirements = generate_answer_requirements(question)
+    validation_error: ValueError | None = None
+
+    for attempt in range(MAX_GENERATION_ATTEMPTS):
+        attempt_requirements = list(answer_requirements)
+        if validation_error is not None:
+            attempt_requirements.append(
+                "Bản trả lời trước không đạt kiểm tra: "
+                f"{validation_error}. Hãy sửa đúng lỗi này và tạo lại toàn bộ "
+                "câu trả lời từ tài liệu tham khảo."
+            )
+
+        grounded = generate_grounded_answer(
+            question,
+            context,
+            history,
+            answer_requirements=attempt_requirements,
+        )
+        try:
+            _validate_claim_coverage(
+                grounded["answer"], grounded["citations"]
+            )
+            _validate_required_coverage(question, grounded, results)
+            sources = _select_cited_sources(results, grounded["citations"])
+        except ValueError as error:
+            validation_error = error
+            if attempt + 1 == MAX_GENERATION_ATTEMPTS:
+                raise
+            continue
+
+        return {"answer": grounded["answer"], "sources": sources}
+
+    raise RuntimeError("Không thể tạo câu trả lời hợp lệ")
 
 
 def _normalized_text(value: str) -> str:
@@ -343,6 +459,75 @@ def _validate_claim_coverage(answer: str, citations: list[object]) -> None:
             raise ValueError("Answer chứa một ý chưa được gắn citation")
 
 
+def _claim_level(claim: str) -> str | None:
+    """Classify a tuition-policy claim by its stated benefit level."""
+    normalized = _normalized_text(claim).replace(" ", "")
+    if "70%" in normalized:
+        return "70"
+    if "50%" in normalized:
+        return "50"
+    if "100%" in normalized or (
+        "miễn" in normalized and "họcphí" in normalized
+    ):
+        return "100"
+    return None
+
+
+def _validate_required_coverage(
+    question: str,
+    grounded: dict,
+    results: list[dict],
+) -> None:
+    """Enforce deterministic completeness and scope for known policy lists."""
+    if not (
+        is_tuition_policy_question(question)
+        and is_complete_list_question(question)
+    ):
+        return
+
+    citations = grounded.get("citations")
+    if not isinstance(citations, list) or not citations:
+        raise ValueError("Câu trả lời chưa bao phủ các mức miễn, giảm học phí")
+
+    claims: dict[str, str | None] = {}
+    for citation in citations:
+        if not isinstance(citation, dict):
+            raise ValueError("Citation phải là một object")
+        claim = citation.get("claim")
+        if isinstance(claim, str) and claim.strip():
+            claims.setdefault(_normalized_text(claim), _claim_level(claim))
+
+    counts = {
+        level: sum(value == level for value in claims.values())
+        for level in ("100", "70", "50")
+    }
+    if counts["100"] < 6 or counts["70"] < 1 or counts["50"] < 1:
+        raise ValueError(
+            "Câu trả lời phải có đủ 6 nhóm miễn 100%, 1 nhóm giảm 70% "
+            "và 1 nhóm giảm 50%"
+        )
+
+    anchor = _tuition_anchor(results)
+    allowed_key = _article_key(anchor) if anchor is not None else None
+    if allowed_key is None:
+        return
+
+    for citation in citations:
+        document = citation.get("document")
+        if (
+            not isinstance(document, int)
+            or isinstance(document, bool)
+            or document < 1
+            or document > len(results)
+        ):
+            raise ValueError("Citation chứa document không hợp lệ")
+        if _article_key(results[document - 1]) != allowed_key:
+            raise ValueError(
+                "Citation về miễn, giảm học phí phải thuộc cùng Điều quy định "
+                "miễn, giảm học phí; không được dùng Điều kế bên"
+            )
+
+
 def _select_cited_sources(
     results: list[dict],
     citations: list[object],
@@ -405,7 +590,9 @@ def _select_cited_sources(
             if cited_clause_set:
                 clause = next(iter(cited_clause_set))
                 evidence_scope = _clause_sections(chunk_text).get(clause, "")
-                if not evidence_scope:
+                if not evidence_scope and available_clause_set == {clause}:
+                    evidence_scope = chunk_text
+                elif not evidence_scope:
                     raise ValueError(
                         "Không xác định được nội dung của khoản viện dẫn"
                     )

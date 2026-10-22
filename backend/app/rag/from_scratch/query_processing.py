@@ -5,7 +5,7 @@ import re
 import unicodedata
 
 
-DEFAULT_MAX_QUERIES = 4
+DEFAULT_MAX_QUERIES = 5
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,22 @@ class QueryExpansionRule:
 
 
 TERM_RULES = (
+    QueryExpansionRule(
+        name="tuition_exemption_reduction",
+        aliases=(
+            "miễn, giảm học phí",
+            "miễn giảm học phí",
+            "miễn học phí",
+            "giảm học phí",
+        ),
+        canonical="đối tượng được miễn, giảm học phí",
+        context_any=("học phí", "sinh viên", "đối tượng", "chính sách"),
+        related_queries=(
+            "đối tượng được miễn 100% học phí không phải đóng học phí",
+            "đối tượng được giảm 70% học phí",
+            "đối tượng được giảm 50% học phí",
+        ),
+    ),
     QueryExpansionRule(
         name="course_registration",
         aliases=("đăng ký tín chỉ", "đăng ký học phần"),
@@ -70,6 +86,20 @@ TERM_RULES = (
 )
 
 
+_COMPLETE_LIST_MARKERS = (
+    "liệt kê",
+    "đầy đủ",
+    "tất cả",
+    "toàn bộ",
+    "đối tượng nào",
+    "những đối tượng",
+    "các đối tượng",
+    "trường hợp nào",
+    "những trường hợp",
+    "các trường hợp",
+)
+
+
 def normalize_query(query: str) -> str:
     """Normalize Unicode and collapse whitespace without changing meaning."""
     normalized = unicodedata.normalize("NFC", query)
@@ -99,10 +129,41 @@ def matching_rules(question: str) -> list[QueryExpansionRule]:
     return matches
 
 
+def is_complete_list_question(question: str) -> bool:
+    """Return whether the user asks for an exhaustive policy-style list."""
+    normalized = normalize_query(question).casefold()
+    return any(marker in normalized for marker in _COMPLETE_LIST_MARKERS)
+
+
+def is_tuition_policy_question(question: str) -> bool:
+    """Return whether the question is about tuition exemption/reduction."""
+    return any(
+        rule.name == "tuition_exemption_reduction"
+        for rule in matching_rules(question)
+    )
+
+
 def generate_answer_requirements(question: str) -> list[str]:
     """Return intent-level coverage checks without supplying answer facts."""
     rule_names = {rule.name for rule in matching_rules(question)}
     requirements: list[str] = []
+
+    if (
+        "tuition_exemption_reduction" in rule_names
+        and is_complete_list_question(question)
+    ):
+        requirements.extend(
+            (
+                "Liệt kê đủ sáu đối tượng được miễn 100% học phí; mỗi đối tượng "
+                "là một claim riêng, tự nêu rõ mức miễn 100% và có citation "
+                "trực tiếp.",
+                "Tạo một claim riêng cho đối tượng được giảm 70% học phí.",
+                "Tạo một claim riêng cho đối tượng được giảm 50% học phí.",
+                "Phân nhóm rõ theo ba mức miễn 100%, giảm 70% và giảm 50%; "
+                "không dùng điều về trợ cấp xã hội hoặc hỗ trợ chi phí học tập "
+                "để chứng minh quyền lợi miễn, giảm học phí.",
+            )
+        )
 
     if "course_registration" in rule_names:
         requirements.extend(
@@ -175,6 +236,7 @@ def generate_search_queries(
                     alias,
                     rule.canonical,
                 )
+                break
 
     _append_unique(queries, rewritten)
 

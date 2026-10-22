@@ -2,11 +2,59 @@ from unittest.mock import patch
 
 from app.rag.from_scratch.embeddings import TfidfVectorizer
 from app.rag.from_scratch.pipeline import (
+    _expand_same_article_context,
     _select_cited_sources,
     _select_sources,
     _validate_claim_coverage,
+    _validate_required_coverage,
     chat,
+    chat_with_sources,
 )
+
+
+def _tuition_claims(document: int = 1) -> list[dict]:
+    claims = [
+        f"Nhóm miễn 100% học phí số {index}."
+        for index in range(1, 7)
+    ]
+    claims.extend(
+        (
+            "Nhóm này được giảm 70% học phí.",
+            "Nhóm này được giảm 50% học phí.",
+        )
+    )
+    return [
+        {
+            "claim": claim,
+            "document": document,
+            "clauses": [1],
+            "evidence": "Bằng chứng.",
+        }
+        for claim in claims
+    ]
+
+
+def _tuition_results() -> list[dict]:
+    return [
+        {
+            "part": "2.6",
+            "article": 3,
+            "article_title": "Điều 3. Đối tượng được miễn, giảm học phí",
+            "clauses": [1],
+            "page_start": 47,
+            "page_end": 48,
+            "text": "Các đối tượng được miễn, giảm học phí.",
+        },
+        {
+            "part": "2.6",
+            "article": 4,
+            "article_title": "Điều 4. Trợ cấp xã hội",
+            "clauses": [1],
+            "page_start": 49,
+            "page_end": 49,
+            "text": "Các đối tượng được hưởng trợ cấp xã hội.",
+        },
+    ]
 
 
 def test_select_cited_sources_keeps_only_model_selected_clauses() -> None:
@@ -113,6 +161,33 @@ def test_select_cited_sources_rejects_evidence_from_wrong_clause() -> None:
     raise AssertionError("Expected ValueError to be raised")
 
 
+def test_select_cited_sources_accepts_fragment_of_one_oversized_clause() -> None:
+    results = [
+        {
+            "article": 3,
+            "clauses": [1],
+            "page_start": 48,
+            "page_end": 48,
+            "text": "đoạn tiếp theo của khoản một về nhóm được miễn học phí",
+        }
+    ]
+
+    sources = _select_cited_sources(
+        results,
+        [
+            {
+                "claim": "Nhóm này được miễn học phí.",
+                "document": 1,
+                "clauses": [1],
+                "evidence": "nhóm được miễn học phí",
+            }
+        ],
+    )
+
+    assert sources[0]["article"] == 3
+    assert sources[0]["clauses"] == [1]
+
+
 def test_claim_coverage_rejects_uncited_answer_sentence() -> None:
     answer = "Ngưỡng cảnh báo là 0,8. Ba lần cảnh báo thì bị thôi học."
     citations = [
@@ -130,6 +205,150 @@ def test_claim_coverage_rejects_uncited_answer_sentence() -> None:
         return
 
     raise AssertionError("Expected ValueError to be raised")
+
+
+def test_complete_list_retrieval_adds_all_chunks_from_anchor_article() -> None:
+    article_3_first = {
+        "part": "2.6",
+        "article": 3,
+        "article_title": "Điều 3. Miễn, giảm học phí",
+        "clauses": [1],
+        "page_start": 47,
+        "text": "Nhóm miễn học phí thứ nhất.",
+    }
+    article_3_second = {
+        "part": "2.6",
+        "article": 3,
+        "article_title": "Điều 3. Miễn, giảm học phí",
+        "clauses": [1, 2, 3],
+        "page_start": 48,
+        "text": "Các nhóm miễn còn lại và các mức giảm học phí.",
+    }
+    article_4 = {
+        "part": "2.6",
+        "article": 4,
+        "article_title": "Điều 4. Trợ cấp xã hội",
+        "clauses": [1],
+        "page_start": 49,
+        "text": "Trợ cấp xã hội.",
+    }
+
+    expanded = _expand_same_article_context(
+        "Đối tượng nào được miễn, giảm học phí?",
+        [article_3_second, article_4],
+        [article_3_first, article_3_second, article_4],
+    )
+
+    assert expanded[:2] == [article_3_first, article_3_second]
+    assert expanded.count(article_3_second) == 1
+    assert article_4 in expanded
+
+
+def test_tuition_coverage_accepts_six_plus_one_plus_one_claims() -> None:
+    citations = _tuition_claims()
+    grounded = {
+        "answer": "\n\n".join(citation["claim"] for citation in citations),
+        "citations": citations,
+    }
+
+    _validate_required_coverage(
+        "Đối tượng nào được miễn, giảm học phí?",
+        grounded,
+        _tuition_results(),
+    )
+
+
+def test_tuition_coverage_rejects_missing_mandatory_group() -> None:
+    citations = _tuition_claims()[:-1]
+    grounded = {
+        "answer": "\n\n".join(citation["claim"] for citation in citations),
+        "citations": citations,
+    }
+
+    try:
+        _validate_required_coverage(
+            "Đối tượng nào được miễn, giảm học phí?",
+            grounded,
+            _tuition_results(),
+        )
+    except ValueError as error:
+        assert "6 nhóm miễn 100%" in str(error)
+        return
+
+    raise AssertionError("Expected ValueError to be raised")
+
+
+def test_tuition_coverage_rejects_citation_from_adjacent_article() -> None:
+    citations = _tuition_claims()
+    citations[-1]["document"] = 2
+    grounded = {
+        "answer": "\n\n".join(citation["claim"] for citation in citations),
+        "citations": citations,
+    }
+
+    try:
+        _validate_required_coverage(
+            "Đối tượng nào được miễn, giảm học phí?",
+            grounded,
+            _tuition_results(),
+        )
+    except ValueError as error:
+        assert "không được dùng Điều kế bên" in str(error)
+        return
+
+    raise AssertionError("Expected ValueError to be raised")
+
+
+def test_chat_retries_once_when_tuition_answer_is_incomplete() -> None:
+    results = [_tuition_results()[0]]
+    results[0]["text"] = "Bằng chứng về miễn, giảm học phí."
+    incomplete = {
+        "answer": "Một nhóm được miễn 100% học phí.",
+        "citations": [
+            {
+                "claim": "Một nhóm được miễn 100% học phí.",
+                "document": 1,
+                "clauses": [1],
+                "evidence": "Bằng chứng về miễn, giảm học phí.",
+            }
+        ],
+    }
+    complete_citations = _tuition_claims()
+    for citation in complete_citations:
+        citation["evidence"] = "Bằng chứng về miễn, giảm học phí."
+    complete = {
+        "answer": "\n\n".join(
+            citation["claim"] for citation in complete_citations
+        ),
+        "citations": complete_citations,
+    }
+
+    with (
+        patch(
+            "app.rag.from_scratch.pipeline.retrieve_for_chat",
+            return_value=results,
+        ),
+        patch(
+            "app.rag.from_scratch.pipeline.generate_grounded_answer",
+            side_effect=[incomplete, complete],
+        ) as mocked_generate,
+    ):
+        response = chat_with_sources(
+            "Đối tượng nào được miễn, giảm học phí?",
+            results,
+            object(),
+            [],
+        )
+
+    assert response["answer"] == complete["answer"]
+    assert mocked_generate.call_count == 2
+    retry_requirements = mocked_generate.call_args.kwargs[
+        "answer_requirements"
+    ]
+    assert any(
+        "Bản trả lời trước không đạt kiểm tra" in item
+        for item in retry_requirements
+    )
 
 
 def test_select_sources_limits_and_deduplicates_sources() -> None:
