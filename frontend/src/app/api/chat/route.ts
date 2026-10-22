@@ -66,6 +66,7 @@ export async function POST(request: Request) {
       headers: {
         Authorization: `Bearer ${apiToken}`,
         "Content-Type": "application/json",
+        "ngrok-skip-browser-warning": "true",
       },
       body: requestBody,
       cache: "no-store",
