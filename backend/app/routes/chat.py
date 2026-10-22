@@ -1,9 +1,11 @@
 """HTTP endpoint for the RAG chat pipeline."""
 
 from functools import lru_cache
+from hmac import compare_digest
 import os
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 
 from app.rag.from_scratch.bm25 import build_bm25_index
 from app.rag.from_scratch.index_store import load_index
@@ -15,9 +17,37 @@ from app.rag.from_scratch.pipeline import (
 from app.schemas.chat import ChatRequest, ChatResponse
 
 
-router = APIRouter()
 rag_chat = chat_with_sources
 RETRIEVAL_MODE_ENV = "UNIGUIDE_RETRIEVAL_MODE"
+API_TOKEN_ENV = "UNIGUIDE_API_TOKEN"
+
+
+def require_api_token(
+    authorization: Annotated[str | None, Header()] = None,
+) -> None:
+    """Reject requests that do not carry the configured Bearer token."""
+    expected_token = os.getenv(API_TOKEN_ENV, "").strip()
+    if not expected_token:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="API access token is not configured.",
+        )
+
+    scheme, separator, supplied_token = (authorization or "").partition(" ")
+    if (
+        not separator
+        or scheme.casefold() != "bearer"
+        or not supplied_token
+        or not compare_digest(supplied_token, expected_token)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing access token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+router = APIRouter(dependencies=[Depends(require_api_token)])
 
 
 @lru_cache(maxsize=1)

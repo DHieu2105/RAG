@@ -3,8 +3,8 @@ from unittest.mock import patch
 from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.main import app
-from app.routes.chat import chat_endpoint, get_rag_index
+from app.main import app, get_cors_origins
+from app.routes.chat import chat_endpoint, get_rag_index, require_api_token
 from app.schemas.chat import ChatRequest
 
 
@@ -25,7 +25,51 @@ def test_cors_allows_nextjs_development_origin() -> None:
     assert middleware.kwargs["allow_origins"] == ["http://localhost:3000"]
     assert middleware.kwargs["allow_credentials"] is False
     assert middleware.kwargs["allow_methods"] == ["GET", "POST"]
-    assert middleware.kwargs["allow_headers"] == ["Content-Type"]
+    assert middleware.kwargs["allow_headers"] == ["Authorization", "Content-Type"]
+
+
+def test_cors_origins_can_be_configured() -> None:
+    with patch.dict(
+        "app.main.os.environ",
+        {"UNIGUIDE_CORS_ORIGINS": "https://example.com, https://preview.example.com/"},
+    ):
+        assert get_cors_origins() == [
+            "https://example.com",
+            "https://preview.example.com",
+        ]
+
+
+def test_api_token_accepts_matching_bearer_token() -> None:
+    with patch.dict(
+        "app.routes.chat.os.environ",
+        {"UNIGUIDE_API_TOKEN": "test-secret"},
+    ):
+        require_api_token("Bearer test-secret")
+
+
+def test_api_token_rejects_missing_or_invalid_token() -> None:
+    with patch.dict(
+        "app.routes.chat.os.environ",
+        {"UNIGUIDE_API_TOKEN": "test-secret"},
+    ):
+        for authorization in (None, "Bearer wrong-secret", "Basic test-secret"):
+            try:
+                require_api_token(authorization)
+            except HTTPException as error:
+                assert error.status_code == 401
+                assert error.headers == {"WWW-Authenticate": "Bearer"}
+            else:
+                raise AssertionError("Expected HTTPException to be raised")
+
+
+def test_api_token_fails_closed_when_not_configured() -> None:
+    with patch.dict("app.routes.chat.os.environ", {}, clear=True):
+        try:
+            require_api_token(None)
+        except HTTPException as error:
+            assert error.status_code == 503
+        else:
+            raise AssertionError("Expected HTTPException to be raised")
 
 
 def test_chat_endpoint_uses_cached_index() -> None:
@@ -75,6 +119,10 @@ def test_chat_endpoint_hides_internal_errors() -> None:
 if __name__ == "__main__":
     test_openapi_contains_chat_endpoint()
     test_cors_allows_nextjs_development_origin()
+    test_cors_origins_can_be_configured()
+    test_api_token_accepts_matching_bearer_token()
+    test_api_token_rejects_missing_or_invalid_token()
+    test_api_token_fails_closed_when_not_configured()
     test_chat_endpoint_uses_cached_index()
     test_chat_endpoint_hides_internal_errors()
     print("All tests passed!")

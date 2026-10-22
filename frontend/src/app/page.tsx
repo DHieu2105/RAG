@@ -38,7 +38,7 @@ const ICON_SIZES: Record<string, [number, number]> = {
 };
 
 const suggestions = ["Đăng ký tín chỉ", "Cảnh báo học tập", "Xét tốt nghiệp"];
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1/chat";
+const API_URL = "/api/chat";
 const CONVERSATIONS_STORAGE_KEY = "uniguide-conversations";
 const ACTIVE_CONVERSATION_STORAGE_KEY = "uniguide-active-conversation";
 
