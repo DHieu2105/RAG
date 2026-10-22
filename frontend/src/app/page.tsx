@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, MouseEvent as ReactMouseEvent, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 
 const ICONS = {
@@ -52,6 +52,7 @@ type Message = {
   role: "user" | "assistant";
   content: string;
   sources?: Source[];
+  status?: "sending" | "failed";
 };
 
 type Source = {
@@ -82,7 +83,12 @@ function loadConversations(): Conversation[] {
       typeof conversation.id === "string"
       && typeof conversation.title === "string"
       && Array.isArray(conversation.messages)
-    )) ? parsedConversations : defaultConversations;
+    )) ? parsedConversations.map((conversation) => ({
+      ...conversation,
+      messages: conversation.messages.map((message) => (
+        message.status === "sending" ? { ...message, status: "failed" } : message
+      )),
+    })) : defaultConversations;
   } catch {
     window.localStorage.removeItem(CONVERSATIONS_STORAGE_KEY);
     return defaultConversations;
@@ -357,7 +363,6 @@ export default function Home() {
   const [conversations, setConversations] = useState<Conversation[]>(defaultConversations);
   const [storageReady, setStorageReady] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const requestId = useRef(0);
 
   useEffect(() => {
@@ -391,7 +396,6 @@ export default function Home() {
     requestId.current += 1;
     setActiveConversationId(null);
     setQuestion("");
-    setError(null);
     setLoading(false);
     setMenuOpen(false);
   }
@@ -400,7 +404,6 @@ export default function Home() {
     requestId.current += 1;
     setActiveConversationId(id);
     setQuestion("");
-    setError(null);
     setLoading(false);
     setMenuOpen(false);
   }
@@ -412,30 +415,40 @@ export default function Home() {
     requestId.current += 1;
     setActiveConversationId(null);
     setQuestion("");
-    setError(null);
     setLoading(false);
     setMenuOpen(false);
   }
 
-  async function submitQuestion(event?: FormEvent) {
-    event?.preventDefault();
-    const value = question.trim();
+  async function sendQuestion(value: string, retryMessageIndex?: number) {
     if (!value || loading) return;
-    setQuestion("");
-    setError(null);
     setLoading(true);
     const currentRequestId = ++requestId.current;
     const conversationId = activeConversationId ?? crypto.randomUUID();
     setActiveConversationId(conversationId);
     const conversation = conversations.find((item) => item.id === conversationId);
-    const history = conversation?.messages ?? [];
+    const history = (
+      retryMessageIndex === undefined
+        ? conversation?.messages ?? []
+        : conversation?.messages.slice(0, retryMessageIndex) ?? []
+    ).filter((message) => message.status !== "failed");
     setConversations((current) => {
       if (current.some((item) => item.id === conversationId)) {
         return current.map((item) => item.id === conversationId
-          ? { ...item, messages: [...item.messages, { role: "user", content: value }] }
+          ? {
+              ...item,
+              messages: retryMessageIndex === undefined
+                ? [...item.messages, { role: "user", content: value, status: "sending" }]
+                : item.messages.map((message, index) => (
+                    index === retryMessageIndex ? { ...message, status: "sending" } : message
+                  )),
+            }
           : item);
       }
-      return [...current, { id: conversationId, title: value, messages: [{ role: "user", content: value }] }];
+      return [...current, {
+        id: conversationId,
+        title: value,
+        messages: [{ role: "user", content: value, status: "sending" }],
+      }];
     });
     try {
       const response = await fetch(API_URL, {
@@ -448,16 +461,46 @@ export default function Home() {
       setConversations((current) => current.map((item) => (
         item.id === conversationId ? {
           ...item,
-          messages: [...item.messages, { role: "assistant", content: payload.answer, sources: payload.sources ?? [] }],
+          messages: [
+            ...item.messages.map((message, index) => (
+              index === (retryMessageIndex ?? item.messages.length - 1)
+                ? { ...message, status: undefined }
+                : message
+            )),
+            { role: "assistant", content: payload.answer, sources: payload.sources ?? [] },
+          ],
         } : item
       )));
     } catch {
-      if (requestId.current === currentRequestId) {
-        setError("Không thể kết nối tới máy chủ. Hãy kiểm tra backend và thử lại.");
-      }
+      setConversations((current) => current.map((item) => (
+        item.id === conversationId ? {
+          ...item,
+          messages: item.messages.map((message, index) => (
+            index === (retryMessageIndex ?? item.messages.length - 1)
+              ? { ...message, status: "failed" }
+              : message
+          )),
+        } : item
+      )));
     } finally {
       if (requestId.current === currentRequestId) setLoading(false);
     }
+  }
+
+  async function submitQuestion(event?: FormEvent) {
+    event?.preventDefault();
+    const value = question.trim();
+    if (!value || loading) return;
+    setQuestion("");
+    await sendQuestion(value);
+  }
+
+  function retryQuestion(event: ReactMouseEvent<HTMLButtonElement>) {
+    const messageIndex = Number(event.currentTarget.dataset.messageIndex);
+    const conversation = conversations.find((item) => item.id === activeConversationId);
+    const message = conversation?.messages[messageIndex];
+    if (!message || message.role !== "user" || message.status !== "failed") return;
+    void sendQuestion(message.content, messageIndex);
   }
 
   return (
@@ -495,12 +538,28 @@ export default function Home() {
                     <>
                       <div className="date-divider">HÔM NAY</div>
                       {conversation.messages.map((message, index) => message.role === "user" ? (
-                        <div className="user-message" key={`${conversation.id}-${index}`}><p>{message.content}</p></div>
+                        <div className="user-message" key={`${conversation.id}-${index}`}>
+                          <div className="user-message-content">
+                            <p>{message.content}</p>
+                            {message.status === "failed" && (
+                              <div className="message-error" role="alert">
+                                <span>Không thể gửi câu hỏi. Vui lòng kiểm tra kết nối.</span>
+                                <button
+                                  type="button"
+                                  disabled={loading}
+                                  data-message-index={index}
+                                  onClick={retryQuestion}
+                                >
+                                  Hỏi lại
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
                       ) : (
                         <AssistantAnswer key={`${conversation.id}-${index}`} answer={message.content} sources={message.sources} />
                       ))}
                       {loading && <div className="loading-message">UniGuide AI đang tra cứu tài liệu…</div>}
-                      {error && <div className="error-message">{error}</div>}
                     </>
                   );
                 })()

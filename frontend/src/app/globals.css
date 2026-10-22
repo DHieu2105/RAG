@@ -549,10 +549,14 @@ button {
   margin-top: 20px;
 }
 
+.user-message-content {
+  width: 345px;
+}
+
 .user-message p {
   display: flex;
   align-items: center;
-  width: 345px;
+  width: 100%;
   min-height: 51px;
   margin: 0;
   padding: 11px 16px;
@@ -563,6 +567,41 @@ button {
   font-size: 12px;
   font-weight: 500;
   line-height: 1.4;
+}
+
+.message-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 7px;
+  padding: 0 2px 0 5px;
+  gap: 10px;
+  color: #a63b3b;
+  font-size: 10px;
+  line-height: 16px;
+}
+
+.message-error button {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border: 1px solid rgb(166 59 59 / 24%);
+  border-radius: 8px;
+  background: #fff5f5;
+  color: #a63b3b;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+  transition: background-color .18s ease, border-color .18s ease;
+}
+
+.message-error button:hover:not(:disabled) {
+  border-color: rgb(166 59 59 / 42%);
+  background: #ffe8e8;
+}
+
+.message-error button:disabled {
+  cursor: default;
+  opacity: .55;
 }
 
 .assistant-message {
@@ -706,18 +745,13 @@ button {
   white-space: pre-wrap;
 }
 
-.loading-message,
-.error-message {
+.loading-message {
   margin: 18px 0 0 48px;
   padding: 14px 16px;
   border-radius: 12px;
   background: white;
   color: var(--ug-muted);
   font-size: 11px;
-}
-
-.error-message {
-  color: #a63b3b;
 }
 
 .composer-area {
@@ -1203,12 +1237,20 @@ button {
     margin-top: 15px;
   }
 
-  .user-message p {
+  .user-message-content {
     width: 276px;
+  }
+
+  .user-message p {
     min-height: 64px;
     padding: 11px 13px;
     font-size: 11px;
     line-height: 20px;
+  }
+
+  .message-error {
+    align-items: flex-start;
+    font-size: 9px;
   }
 
   .assistant-message {
