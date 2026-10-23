@@ -10,6 +10,7 @@ from app.rag.from_scratch.pipeline import (
     chat,
     chat_with_sources,
 )
+from app.rag.from_scratch.llm import INSUFFICIENT_ANSWER
 
 
 def _tuition_claims(document: int = 1) -> list[dict]:
@@ -244,6 +245,40 @@ def test_complete_list_retrieval_adds_all_chunks_from_anchor_article() -> None:
     assert article_4 in expanded
 
 
+def test_social_allowance_coverage_rejects_adjacent_benefit() -> None:
+    results = [
+        {
+            "part": "2.6",
+            "article": 4,
+            "article_title": "Điều 4. Các đối tượng sinh viên được cấp trợ cấp xã hội",
+            "clauses": [3],
+            "text": "Sinh viên có hoàn cảnh khó khăn thuộc diện xóa đói giảm nghèo.",
+        }
+    ]
+    grounded = {
+        "answer": "Sinh viên có hoàn cảnh khó khăn và trẻ em dưới 16 tuổi.",
+        "citations": [
+            {
+                "claim": "Sinh viên có hoàn cảnh khó khăn thuộc diện xóa đói giảm nghèo và trẻ em dưới 16 tuổi.",
+                "document": 1,
+                "clauses": [3],
+            }
+        ],
+    }
+
+    try:
+        _validate_required_coverage(
+            "Ai được cấp trợ cấp xã hội?",
+            grounded,
+            results,
+        )
+    except ValueError as error:
+        assert "Không được đánh đồng" in str(error)
+        return
+
+    raise AssertionError("Expected ValueError to be raised")
+
+
 def test_tuition_coverage_accepts_six_plus_one_plus_one_claims() -> None:
     citations = _tuition_claims()
     grounded = {
@@ -253,6 +288,20 @@ def test_tuition_coverage_accepts_six_plus_one_plus_one_claims() -> None:
 
     _validate_required_coverage(
         "Đối tượng nào được miễn, giảm học phí?",
+        grounded,
+        _tuition_results(),
+    )
+
+
+def test_tuition_coverage_accepts_only_six_claims_for_explicit_100_percent() -> None:
+    citations = _tuition_claims()[:6]
+    grounded = {
+        "answer": "\n\n".join(citation["claim"] for citation in citations),
+        "citations": citations,
+    }
+
+    _validate_required_coverage(
+        "Những ai được miễn 100% học phí?",
         grounded,
         _tuition_results(),
     )
@@ -349,6 +398,41 @@ def test_chat_retries_once_when_tuition_answer_is_incomplete() -> None:
         "Bản trả lời trước không đạt kiểm tra" in item
         for item in retry_requirements
     )
+
+
+def test_chat_returns_insufficient_answer_after_two_invalid_attempts() -> None:
+    results = [_tuition_results()[0]]
+    results[0]["text"] = "Bằng chứng về miễn, giảm học phí."
+    incomplete = {
+        "answer": "Một nhóm được miễn 100% học phí.",
+        "citations": [
+            {
+                "claim": "Một nhóm được miễn 100% học phí.",
+                "document": 1,
+                "clauses": [1],
+                "evidence": "Bằng chứng về miễn, giảm học phí.",
+            }
+        ],
+    }
+
+    with (
+        patch(
+            "app.rag.from_scratch.pipeline.retrieve_for_chat",
+            return_value=results,
+        ),
+        patch(
+            "app.rag.from_scratch.pipeline.generate_grounded_answer",
+            side_effect=[incomplete, incomplete],
+        ),
+    ):
+        response = chat_with_sources(
+            "Đối tượng nào được miễn, giảm học phí?",
+            results,
+            object(),
+            [],
+        )
+
+    assert response == {"answer": INSUFFICIENT_ANSWER, "sources": []}
 
 
 def test_select_sources_limits_and_deduplicates_sources() -> None:

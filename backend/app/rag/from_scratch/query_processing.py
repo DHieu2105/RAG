@@ -26,7 +26,10 @@ TERM_RULES = (
             "miễn, giảm học phí",
             "miễn giảm học phí",
             "miễn học phí",
+            "miễn 100% học phí",
             "giảm học phí",
+            "giảm 70% học phí",
+            "giảm 50% học phí",
         ),
         canonical="đối tượng được miễn, giảm học phí",
         context_any=("học phí", "sinh viên", "đối tượng", "chính sách"),
@@ -35,6 +38,12 @@ TERM_RULES = (
             "đối tượng được giảm 70% học phí",
             "đối tượng được giảm 50% học phí",
         ),
+    ),
+    QueryExpansionRule(
+        name="social_allowance",
+        aliases=("cấp trợ cấp xã hội",),
+        canonical="đối tượng sinh viên được cấp trợ cấp xã hội",
+        context_any=("trợ cấp", "sinh viên", "đối tượng", "xã hội"),
     ),
     QueryExpansionRule(
         name="course_registration",
@@ -97,6 +106,12 @@ _COMPLETE_LIST_MARKERS = (
     "trường hợp nào",
     "những trường hợp",
     "các trường hợp",
+    "ai được",
+    "ai sẽ được",
+    "những ai",
+    "gồm những ai",
+    "bao gồm những ai",
+    "những nhóm nào",
 )
 
 
@@ -143,17 +158,39 @@ def is_tuition_policy_question(question: str) -> bool:
     )
 
 
+def is_social_allowance_question(question: str) -> bool:
+    """Return whether the question asks who receives social allowance."""
+    return any(rule.name == "social_allowance" for rule in matching_rules(question))
+
+
+def requested_tuition_levels(question: str) -> tuple[str, ...]:
+    """Return explicitly requested tuition levels, or all levels if generic."""
+    if not is_tuition_policy_question(question):
+        return ()
+
+    normalized = normalize_query(question).casefold()
+    explicit = {
+        match.group(1)
+        for match in re.finditer(r"(?<!\d)(100|70|50)\s*%", normalized)
+    }
+    levels = ("100", "70", "50")
+    if explicit:
+        return tuple(level for level in levels if level in explicit)
+    return levels
+
+
 def generate_answer_requirements(question: str) -> list[str]:
     """Return intent-level coverage checks without supplying answer facts."""
     rule_names = {rule.name for rule in matching_rules(question)}
     requirements: list[str] = []
 
-    if (
-        "tuition_exemption_reduction" in rule_names
-        and is_complete_list_question(question)
+    if "tuition_exemption_reduction" in rule_names and is_complete_list_question(
+        question
     ):
-        requirements.extend(
-            (
+        levels = requested_tuition_levels(question)
+        if levels == ("100", "70", "50"):
+            requirements.extend(
+                (
                 "Liệt kê đủ sáu đối tượng được miễn 100% học phí; mỗi đối tượng "
                 "là một claim riêng, tự nêu rõ mức miễn 100% và có citation "
                 "trực tiếp.",
@@ -162,7 +199,33 @@ def generate_answer_requirements(question: str) -> list[str]:
                 "Phân nhóm rõ theo ba mức miễn 100%, giảm 70% và giảm 50%; "
                 "không dùng điều về trợ cấp xã hội hoặc hỗ trợ chi phí học tập "
                 "để chứng minh quyền lợi miễn, giảm học phí.",
+                )
             )
+        else:
+            if "100" in levels:
+                requirements.append(
+                    "Liệt kê đủ sáu đối tượng được miễn 100% học phí; mỗi đối tượng "
+                    "là một claim riêng, tự nêu rõ mức miễn 100% và có citation "
+                    "trực tiếp."
+                )
+            if "70" in levels:
+                requirements.append(
+                    "Tạo một claim riêng cho đối tượng được giảm 70% học phí."
+                )
+            if "50" in levels:
+                requirements.append(
+                    "Tạo một claim riêng cho đối tượng được giảm 50% học phí."
+                )
+            requirements.append(
+                "Chỉ trả lời các mức học phí được hỏi; không dùng điều về trợ "
+                "cấp xã hội hoặc hỗ trợ chi phí học tập để chứng minh quyền lợi."
+            )
+
+    if "social_allowance" in rule_names:
+        requirements.append(
+            "Chỉ nêu đối tượng được cấp trợ cấp xã hội trực tiếp dưới tiêu đề "
+            "Điều 4; không đánh đồng với mục Hỗ trợ chi phí học tập hoặc danh "
+            "sách đối tượng bảo trợ xã hội hưởng trợ cấp hàng tháng."
         )
 
     if "course_registration" in rule_names:
@@ -242,6 +305,19 @@ def generate_search_queries(
 
     for rule in rules:
         for related_query in rule.related_queries:
+            if rule.name == "tuition_exemption_reduction":
+                explicit_levels = {
+                    match.group(1)
+                    for match in re.finditer(
+                        r"(?<!\d)(100|70|50)\s*%",
+                        original.casefold(),
+                    )
+                }
+                if explicit_levels and not any(
+                    f"{level}%" in related_query
+                    for level in explicit_levels
+                ):
+                    continue
             _append_unique(queries, related_query)
             if len(queries) >= max_queries:
                 return queries[:max_queries]

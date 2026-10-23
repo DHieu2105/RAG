@@ -147,3 +147,42 @@ def test_rejects_invalid_query_limit() -> None:
         return
 
     raise AssertionError("Expected ValueError to be raised")
+
+
+def test_short_tuition_list_questions() -> None:
+    questions = [
+        "ai được miễn giảm học phí",
+        "những ai được miễn giảm học phí",
+        "đối tượng nào được miễn, giảm học phí",
+        "liệt kê các đối tượng được miễn giảm học phí",
+    ]
+
+    for question in questions:
+        assert is_complete_list_question(question)
+        requirements = generate_answer_requirements(question)
+        assert any("sáu đối tượng" in item for item in requirements)
+        assert any("70%" in item for item in requirements)
+        assert any("50%" in item for item in requirements)
+
+
+def test_specific_full_tuition_exemption_stays_scoped_to_100_percent() -> None:
+    question = "Những ai được miễn 100% học phí?"
+
+    assert is_complete_list_question(question)
+    assert is_tuition_policy_question(question)
+    queries = generate_search_queries(question)
+    requirements = generate_answer_requirements(question)
+
+    assert any("miễn 100%" in query for query in queries)
+    assert not any("70%" in query or "50%" in query for query in queries)
+    assert any("sáu đối tượng" in item for item in requirements)
+    assert not any("70%" in item or "50%" in item for item in requirements)
+
+
+def test_social_allowance_question_is_not_tuition_policy() -> None:
+    question = "Ai được cấp trợ cấp xã hội?"
+
+    assert is_complete_list_question(question)
+    assert not is_tuition_policy_question(question)
+    requirements = generate_answer_requirements(question)
+    assert any("không đánh đồng" in item for item in requirements)

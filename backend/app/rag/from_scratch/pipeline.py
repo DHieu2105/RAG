@@ -10,13 +10,15 @@ from .chunker import structure_chunk
 from .context_builder import build_context
 from .embeddings import TfidfVectorizer
 from .index_store import INDEX_PATH, load_index, save_index
-from .llm import generate_answer, generate_grounded_answer
+from .llm import INSUFFICIENT_ANSWER, generate_answer, generate_grounded_answer
 from .preprocessing import preprocess_pages
 from .query_processing import (
     generate_answer_requirements,
     generate_search_queries,
     is_complete_list_question,
+    is_social_allowance_question,
     is_tuition_policy_question,
+    requested_tuition_levels,
 )
 from .reranker import rerank_results
 from .retriever import reciprocal_rank_fusion, top_k_search
@@ -267,14 +269,24 @@ def _chunk_key(chunk: dict) -> tuple[object, ...]:
 
 
 def _tuition_anchor(results: list[dict]) -> dict | None:
-    """Prefer the retrieved article that explicitly governs tuition relief."""
-    for field in ("article_title", "text"):
-        for chunk in results:
-            searchable = str(chunk.get(field) or "").casefold()
-            if "học phí" in searchable and (
-                "miễn" in searchable or "giảm" in searchable
-            ):
-                return chunk
+    """Find the article explicitly governing tuition exemption/reduction."""
+    for chunk in results:
+        title = str(chunk.get("article_title") or "").casefold()
+        if (
+            "học phí" in title
+            and "miễn" in title
+            and "giảm" in title
+        ):
+            return chunk
+    return None
+
+
+def _social_allowance_anchor(results: list[dict]) -> dict | None:
+    """Find the article explicitly governing student social allowance."""
+    for chunk in results:
+        title = str(chunk.get("article_title") or "").casefold()
+        if "sinh viên" in title and "trợ cấp xã hội" in title:
+            return chunk
     return None
 
 
@@ -295,12 +307,15 @@ def _expand_same_article_context(
     ):
         return results
 
-    anchor = (
-        _tuition_anchor(results)
-        if is_tuition_policy_question(question)
-        else None
-    )
-    if anchor is None:
+    if is_tuition_policy_question(question):
+        anchor = _tuition_anchor(results)
+        if anchor is None:
+            return results
+    elif is_social_allowance_question(question):
+        anchor = _social_allowance_anchor(results)
+        if anchor is None:
+            return results
+    else:
         anchor = next(
             (result for result in results if _article_key(result) is not None),
             None,
@@ -310,7 +325,10 @@ def _expand_same_article_context(
 
     anchor_key = _article_key(anchor)
     siblings = [chunk for chunk in chunks if _article_key(chunk) == anchor_key]
-    candidates = [*siblings, *results]
+    if is_social_allowance_question(question):
+        candidates = [anchor]
+    else:
+        candidates = [*siblings, *results]
     expanded: list[dict] = []
     seen: set[tuple[object, ...]] = set()
     used_chars = 0
@@ -380,7 +398,7 @@ def chat_with_sources(
         except ValueError as error:
             validation_error = error
             if attempt + 1 == MAX_GENERATION_ATTEMPTS:
-                raise
+                return {"answer": INSUFFICIENT_ANSWER, "sources": []}
             continue
 
         return {"answer": grounded["answer"], "sources": sources}
@@ -479,6 +497,58 @@ def _validate_required_coverage(
     results: list[dict],
 ) -> None:
     """Enforce deterministic completeness and scope for known policy lists."""
+    if is_social_allowance_question(question) and is_complete_list_question(
+        question
+    ):
+        citations = grounded.get("citations")
+        if not isinstance(citations, list) or not citations:
+            raise ValueError("Câu trả lời chưa nêu đối tượng được cấp trợ cấp xã hội")
+
+        anchor = _social_allowance_anchor(results)
+        allowed_key = _article_key(anchor) if anchor is not None else None
+        if allowed_key is None:
+            raise ValueError(
+                "Chưa tìm được điều quy định trực tiếp về trợ cấp xã hội"
+            )
+
+        claims = " ".join(
+            str(citation.get("claim") or "").casefold()
+            for citation in citations
+            if isinstance(citation, dict)
+        )
+        if not (
+            "sinh viên có hoàn cảnh khó khăn" in claims
+            and "xóa đói giảm nghèo" in claims
+        ):
+            raise ValueError(
+                "Câu trả lời chưa nêu đúng đối tượng sinh viên được cấp trợ cấp xã hội"
+            )
+        if any(
+            phrase in claims
+            for phrase in (
+                "hỗ trợ chi phí học tập",
+                "trẻ em dưới 16 tuổi",
+                "bảo trợ xã hội",
+            )
+        ):
+            raise ValueError(
+                "Không được đánh đồng trợ cấp xã hội với quyền lợi liền kề"
+            )
+
+        for citation in citations:
+            document = citation.get("document")
+            if (
+                not isinstance(document, int)
+                or isinstance(document, bool)
+                or document < 1
+                or document > len(results)
+                or _article_key(results[document - 1]) != allowed_key
+            ):
+                raise ValueError(
+                    "Citation về trợ cấp xã hội phải thuộc đúng điều quy định"
+                )
+        return
+
     if not (
         is_tuition_policy_question(question)
         and is_complete_list_question(question)
@@ -501,7 +571,18 @@ def _validate_required_coverage(
         level: sum(value == level for value in claims.values())
         for level in ("100", "70", "50")
     }
-    if counts["100"] < 6 or counts["70"] < 1 or counts["50"] < 1:
+    minimum_counts = {"100": 6, "70": 1, "50": 1}
+    requested_levels = requested_tuition_levels(question)
+    if any(counts[level] < minimum_counts[level] for level in requested_levels):
+        if requested_levels != ("100", "70", "50"):
+            requested_summary = ", ".join(
+                f"{minimum_counts[level]} nhóm mức {level}%"
+                for level in requested_levels
+            )
+            raise ValueError(
+                "Câu trả lời chưa bao phủ đủ đối tượng được hỏi: "
+                f"{requested_summary}"
+            )
         raise ValueError(
             "Câu trả lời phải có đủ 6 nhóm miễn 100%, 1 nhóm giảm 70% "
             "và 1 nhóm giảm 50%"
@@ -510,7 +591,9 @@ def _validate_required_coverage(
     anchor = _tuition_anchor(results)
     allowed_key = _article_key(anchor) if anchor is not None else None
     if allowed_key is None:
-        return
+        raise ValueError(
+            "Chưa tìm được điều quy định trực tiếp về miễn, giảm học phí"
+        )
 
     for citation in citations:
         document = citation.get("document")
@@ -596,9 +679,19 @@ def _select_cited_sources(
                     raise ValueError(
                         "Không xác định được nội dung của khoản viện dẫn"
                     )
-            if _normalized_evidence(evidence) not in _normalized_evidence(
+            normalized_evidence = _normalized_evidence(evidence)
+            evidence_matches_scope = normalized_evidence in _normalized_evidence(
                 evidence_scope
+            )
+            if (
+                not evidence_matches_scope
+                and cited_clause_set
+                and available_clause_set == cited_clause_set
             ):
+                evidence_matches_scope = (
+                    normalized_evidence in _normalized_evidence(chunk_text)
+                )
+            if not evidence_matches_scope:
                 raise ValueError(
                     "Evidence không xuất hiện trong đúng tài liệu và khoản viện dẫn"
                 )
