@@ -1,0 +1,9 @@
+{"question":"Những đối tượng nào được miễn học phí?","answerable":true,"category":"tuition_exemption"}
+{"question":"Những đối tượng nào được giảm học phí?","answerable":true,"category":"tuition_reduction"}
+{"question":"Ai được cấp trợ cấp xã hội?","answerable":true,"category":"social_allowance"}
+{"question":"Khi nào sinh viên bị cảnh báo học tập?","answerable":true,"category":"academic_warning"}
+{"question":"Khi nào sinh viên bị buộc thôi học?","answerable":true,"category":"academic_dismissal"}
+{"question":"Mỗi học kỳ chính phải đăng ký ít nhất bao nhiêu tín chỉ?","answerable":true,"category":"credit_registration"}
+{"question":"Điều kiện để sinh viên được xét công nhận tốt nghiệp là gì?","answerable":true,"category":"graduation_conditions"}
+{"question":"Quy trình đăng ký học thực hiện như thế nào?","answerable":true,"category":"registration_procedure"}
+{"question":"Trường có cấp laptop miễn phí cho sinh viên không?","answerable":false,"category":"out_of_scope"}

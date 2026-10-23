@@ -33,13 +33,15 @@ def test_retrieve_for_chat_uses_hybrid_by_default() -> None:
             bm25_index=bm25_index,
         )
 
-    assert results == expected
+    assert [result["text"] for result in results] == ["Hybrid"]
+    assert results[0]["_context_complete"] is True
     mocked_hybrid.assert_called_once_with(
         "Câu hỏi?",
         chunks,
         vectorizer,
         [[1.0]],
         bm25_index,
+        top_k=5,
     )
     mocked_legacy.assert_not_called()
 
@@ -65,7 +67,8 @@ def test_retrieve_for_chat_supports_legacy_rollback() -> None:
             retrieval_mode="tfidf_qp",
         )
 
-    assert results == expected
+    assert [result["text"] for result in results] == ["TF-IDF"]
+    assert results[0]["_context_complete"] is True
     mocked_legacy.assert_called_once()
     mocked_hybrid.assert_not_called()
 

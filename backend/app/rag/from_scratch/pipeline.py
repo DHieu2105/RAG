@@ -2,6 +2,7 @@
 
 import re
 import sys
+from enum import Enum
 
 from app.rag.loader import PDF_PATH, load_pdf
 
@@ -9,27 +10,66 @@ from .bm25 import BM25Index, build_bm25_index
 from .chunker import structure_chunk
 from .context_builder import build_context
 from .embeddings import TfidfVectorizer
+from .grounding import (
+    AnswerCoverageError,
+    CitationValidationError,
+    context_is_relevant,
+    coverage_requirements,
+    extract_coverage_units,
+    prepare_structured_context,
+    validate_answer_coverage,
+    validate_claim_faithfulness,
+)
 from .index_store import INDEX_PATH, load_index, save_index
-from .llm import INSUFFICIENT_ANSWER, generate_answer, generate_grounded_answer
+from .llm import generate_answer, generate_grounded_answer
 from .preprocessing import preprocess_pages
 from .query_processing import (
     generate_answer_requirements,
     generate_search_queries,
-    is_complete_list_question,
-    is_social_allowance_question,
-    is_tuition_policy_question,
-    requested_tuition_levels,
 )
+from .query_understanding import analyze_query
 from .reranker import rerank_results
 from .retriever import reciprocal_rank_fusion, top_k_search
 
 
 DEFAULT_TOP_K = 5
 DEFAULT_CANDIDATE_K = 15
+CHAT_TOP_K = 8
 MAX_CONTEXT_CHARS = 16_000
 MAX_CONTEXT_CHUNKS = 16
 MAX_GENERATION_ATTEMPTS = 2
 ORIGINAL_QUERY_WEIGHT = 1.1
+NO_RELEVANT_DOCUMENT_ANSWER = "Không tìm thấy tài liệu liên quan trong sổ tay."
+INCOMPLETE_CONTEXT_ANSWER = (
+    "Đã tìm thấy tài liệu liên quan nhưng ngữ cảnh truy xuất chưa đủ để trả lời chắc chắn."
+)
+INCOMPLETE_GENERATION_ANSWER = (
+    "Đã tìm thấy căn cứ liên quan nhưng câu trả lời sinh ra chưa bao phủ đầy đủ thông tin."
+)
+INVALID_CITATION_ANSWER = (
+    "Đã tạo câu trả lời nhưng trích dẫn chưa hợp lệ nên chưa thể xác minh."
+)
+
+
+class AnswerState(str, Enum):
+    NO_RELEVANT_DOCUMENT = "no_relevant_document"
+    INCOMPLETE_CONTEXT = "incomplete_context"
+    INCOMPLETE_GENERATION = "incomplete_generation"
+    INVALID_CITATION = "invalid_citation"
+    VERIFIED = "verified"
+
+
+def classify_answer_state(answer: str) -> AnswerState:
+    """Map the unchanged API answer field to an explicit internal state."""
+    states = {
+        NO_RELEVANT_DOCUMENT_ANSWER: AnswerState.NO_RELEVANT_DOCUMENT,
+        INCOMPLETE_CONTEXT_ANSWER: AnswerState.INCOMPLETE_CONTEXT,
+        INCOMPLETE_GENERATION_ANSWER: AnswerState.INCOMPLETE_GENERATION,
+        INVALID_CITATION_ANSWER: AnswerState.INVALID_CITATION,
+    }
+    return states.get(answer, AnswerState.VERIFIED)
+
+
 HYBRID_RETRIEVAL_MODE = "hybrid"
 LEGACY_RETRIEVAL_MODE = "tfidf_qp"
 SUPPORTED_RETRIEVAL_MODES = {
@@ -209,7 +249,7 @@ def chat(
         retrieval_mode=retrieval_mode,
     )
     if not results:
-        return "Không tìm thấy thông tin liên quan trong sổ tay."
+        return NO_RELEVANT_DOCUMENT_ANSWER
     return generate_answer(question, build_context(results))
 
 
@@ -222,12 +262,15 @@ def retrieve_for_chat(
     retrieval_mode: str = HYBRID_RETRIEVAL_MODE,
 ) -> list[dict]:
     """Retrieve chat context with Hybrid or the rollback TF-IDF mode."""
+    analysis = analyze_query(question)
+    chat_top_k = CHAT_TOP_K if analysis.requires_complete_coverage else DEFAULT_TOP_K
     if retrieval_mode == LEGACY_RETRIEVAL_MODE:
         results = ask_with_query_processing(
             question,
             chunks,
             vectorizer,
             document_vectors,
+            top_k=chat_top_k,
         )
     elif retrieval_mode != HYBRID_RETRIEVAL_MODE:
         supported = ", ".join(sorted(SUPPORTED_RETRIEVAL_MODES))
@@ -243,51 +286,10 @@ def retrieve_for_chat(
             vectorizer,
             document_vectors,
             active_bm25_index,
+            top_k=chat_top_k,
         )
 
     return _expand_same_article_context(question, results, chunks)
-
-
-def _article_key(chunk: dict) -> tuple[object, object, object] | None:
-    """Identify an article without merging equal article numbers across parts."""
-    article = chunk.get("article")
-    if article is None:
-        return None
-    return (chunk.get("part"), chunk.get("chapter"), article)
-
-
-def _chunk_key(chunk: dict) -> tuple[object, ...]:
-    """Build a stable identity for in-memory chunks without requiring an id."""
-    article_key = _article_key(chunk) or (None, None, None)
-    return (
-        *article_key,
-        tuple(chunk.get("clauses") or []),
-        chunk.get("page_start"),
-        chunk.get("page_end"),
-        chunk.get("text"),
-    )
-
-
-def _tuition_anchor(results: list[dict]) -> dict | None:
-    """Find the article explicitly governing tuition exemption/reduction."""
-    for chunk in results:
-        title = str(chunk.get("article_title") or "").casefold()
-        if (
-            "học phí" in title
-            and "miễn" in title
-            and "giảm" in title
-        ):
-            return chunk
-    return None
-
-
-def _social_allowance_anchor(results: list[dict]) -> dict | None:
-    """Find the article explicitly governing student social allowance."""
-    for chunk in results:
-        title = str(chunk.get("article_title") or "").casefold()
-        if "sinh viên" in title and "trợ cấp xã hội" in title:
-            return chunk
-    return None
 
 
 def _expand_same_article_context(
@@ -298,55 +300,16 @@ def _expand_same_article_context(
     max_chars: int = MAX_CONTEXT_CHARS,
     max_chunks: int = MAX_CONTEXT_CHUNKS,
 ) -> list[dict]:
-    """Add every chunk of the best-matching article for exhaustive questions."""
-    if (
-        not results
-        or not is_complete_list_question(question)
-        or max_chars <= 0
-        or max_chunks <= 0
-    ):
-        return results
-
-    if is_tuition_policy_question(question):
-        anchor = _tuition_anchor(results)
-        if anchor is None:
-            return results
-    elif is_social_allowance_question(question):
-        anchor = _social_allowance_anchor(results)
-        if anchor is None:
-            return results
-    else:
-        anchor = next(
-            (result for result in results if _article_key(result) is not None),
-            None,
-        )
-    if anchor is None:
-        return results
-
-    anchor_key = _article_key(anchor)
-    siblings = [chunk for chunk in chunks if _article_key(chunk) == anchor_key]
-    if is_social_allowance_question(question):
-        candidates = [anchor]
-    else:
-        candidates = [*siblings, *results]
-    expanded: list[dict] = []
-    seen: set[tuple[object, ...]] = set()
-    used_chars = 0
-
-    for chunk in candidates:
-        identity = _chunk_key(chunk)
-        if identity in seen:
-            continue
-        text = str(chunk.get("text") or "")
-        if expanded and used_chars + len(text) > max_chars:
-            continue
-        expanded.append(chunk)
-        seen.add(identity)
-        used_chars += len(text)
-        if len(expanded) >= max_chunks:
-            break
-
-    return expanded
+    """Expand and filter context by generic intent and document structure."""
+    if max_chars <= 0 or max_chunks <= 0:
+        return []
+    return prepare_structured_context(
+        analyze_query(question),
+        results,
+        chunks,
+        max_chars=max_chars,
+        max_chunks=max_chunks,
+    )
 
 
 def chat_with_sources(
@@ -359,6 +322,7 @@ def chat_with_sources(
     retrieval_mode: str = HYBRID_RETRIEVAL_MODE,
 ) -> dict:
     """Return an answer together with the retrieved source metadata."""
+    analysis = analyze_query(question)
     results = retrieve_for_chat(
         question,
         chunks,
@@ -367,12 +331,22 @@ def chat_with_sources(
         bm25_index=bm25_index,
         retrieval_mode=retrieval_mode,
     )
-    if not results:
-        return {"answer": "Không tìm thấy thông tin liên quan trong sổ tay.", "sources": []}
+    known_terms = getattr(vectorizer, "vocabulary", None)
+    if isinstance(known_terms, dict):
+        known_terms = set(known_terms)
+    else:
+        known_terms = None
+    if not context_is_relevant(analysis, results, known_terms=known_terms):
+        return {"answer": NO_RELEVANT_DOCUMENT_ANSWER, "sources": []}
+    if any(not result.get("_context_complete", True) for result in results):
+        return {"answer": INCOMPLETE_CONTEXT_ANSWER, "sources": []}
 
     context = build_context(results)
     answer_requirements = generate_answer_requirements(question)
+    coverage_units = extract_coverage_units(analysis, results)
+    answer_requirements.extend(coverage_requirements(coverage_units))
     validation_error: ValueError | None = None
+    final_failure = "generation"
 
     for attempt in range(MAX_GENERATION_ATTEMPTS):
         attempt_requirements = list(answer_requirements)
@@ -383,27 +357,46 @@ def chat_with_sources(
                 "câu trả lời từ tài liệu tham khảo."
             )
 
-        grounded = generate_grounded_answer(
-            question,
-            context,
-            history,
-            answer_requirements=attempt_requirements,
-        )
         try:
+            grounded = generate_grounded_answer(
+                question,
+                context,
+                history,
+                answer_requirements=attempt_requirements,
+            )
+            _normalize_citation_metadata(results, grounded.get("citations", []))
+            if not grounded.get("citations"):
+                raise AnswerCoverageError(
+                    "Model không tạo được claim có citation từ context"
+                )
             _validate_claim_coverage(
                 grounded["answer"], grounded["citations"]
             )
-            _validate_required_coverage(question, grounded, results)
             sources = _select_cited_sources(results, grounded["citations"])
-        except ValueError as error:
+            validate_claim_faithfulness(
+                analysis,
+                results,
+                grounded["citations"],
+            )
+            validate_answer_coverage(coverage_units, grounded["citations"])
+        except AnswerCoverageError as error:
             validation_error = error
+            final_failure = "generation"
             if attempt + 1 == MAX_GENERATION_ATTEMPTS:
-                return {"answer": INSUFFICIENT_ANSWER, "sources": []}
+                return {"answer": INCOMPLETE_GENERATION_ANSWER, "sources": []}
+            continue
+        except (CitationValidationError, ValueError) as error:
+            validation_error = error
+            final_failure = "citation"
+            if attempt + 1 == MAX_GENERATION_ATTEMPTS:
+                return {"answer": INVALID_CITATION_ANSWER, "sources": []}
             continue
 
         return {"answer": grounded["answer"], "sources": sources}
 
-    raise RuntimeError("Không thể tạo câu trả lời hợp lệ")
+    if final_failure == "citation":
+        return {"answer": INVALID_CITATION_ANSWER, "sources": []}
+    return {"answer": INCOMPLETE_GENERATION_ANSWER, "sources": []}
 
 
 def _normalized_text(value: str) -> str:
@@ -425,6 +418,60 @@ def _normalized_evidence(value: str) -> str:
         }
     )
     return _normalized_text(value.translate(punctuation))
+
+
+def _normalize_citation_metadata(
+    results: list[dict],
+    citations: list[object],
+) -> None:
+    """Repair only clause labels disproved by exact evidence metadata.
+
+    Qwen occasionally invents a clause number for an unnumbered paragraph.
+    When the quoted evidence is an exact span of that paragraph, clearing the
+    clause is deterministic and more accurate than rejecting the citation.
+    """
+    for citation in citations:
+        if not isinstance(citation, dict):
+            continue
+        document = citation.get("document")
+        clauses = citation.get("clauses")
+        evidence = citation.get("evidence")
+        if (
+            not isinstance(document, int)
+            or isinstance(document, bool)
+            or not 1 <= document <= len(results)
+            or not isinstance(clauses, list)
+            or not clauses
+            or not isinstance(evidence, str)
+        ):
+            continue
+        chunk = results[document - 1]
+        available_clauses = chunk.get("clauses") or []
+        text = str(chunk.get("text") or "")
+        normalized_text = _normalized_evidence(text)
+        if _normalized_evidence(evidence) not in normalized_text:
+            # Small models sometimes prepend the shared list introduction to
+            # item b/c even though item a lies between them in the source.
+            # Keep only the longest exact item suffix; never invent wording.
+            item_starts = [
+                match.start()
+                for match in re.finditer(
+                    r"(?i)(?<!\w)(?:[a-zđ]\)|[a-zđ]\.\s|bước\s+\d+\s*:)",
+                    evidence,
+                )
+            ]
+            exact_suffixes = [
+                evidence[start:].strip()
+                for start in item_starts
+                if _normalized_evidence(evidence[start:].strip()) in normalized_text
+            ]
+            if exact_suffixes:
+                citation["evidence"] = max(exact_suffixes, key=len)
+                evidence = citation["evidence"]
+        if not available_clauses and _normalized_evidence(
+            evidence
+        ) in _normalized_evidence(text):
+            citation["clauses"] = []
 
 
 def _clause_sections(text: str) -> dict[int, str]:
@@ -477,138 +524,15 @@ def _validate_claim_coverage(answer: str, citations: list[object]) -> None:
             raise ValueError("Answer chứa một ý chưa được gắn citation")
 
 
-def _claim_level(claim: str) -> str | None:
-    """Classify a tuition-policy claim by its stated benefit level."""
-    normalized = _normalized_text(claim).replace(" ", "")
-    if "70%" in normalized:
-        return "70"
-    if "50%" in normalized:
-        return "50"
-    if "100%" in normalized or (
-        "miễn" in normalized and "họcphí" in normalized
-    ):
-        return "100"
-    return None
-
-
 def _validate_required_coverage(
     question: str,
     grounded: dict,
     results: list[dict],
 ) -> None:
-    """Enforce deterministic completeness and scope for known policy lists."""
-    if is_social_allowance_question(question) and is_complete_list_question(
-        question
-    ):
-        citations = grounded.get("citations")
-        if not isinstance(citations, list) or not citations:
-            raise ValueError("Câu trả lời chưa nêu đối tượng được cấp trợ cấp xã hội")
-
-        anchor = _social_allowance_anchor(results)
-        allowed_key = _article_key(anchor) if anchor is not None else None
-        if allowed_key is None:
-            raise ValueError(
-                "Chưa tìm được điều quy định trực tiếp về trợ cấp xã hội"
-            )
-
-        claims = " ".join(
-            str(citation.get("claim") or "").casefold()
-            for citation in citations
-            if isinstance(citation, dict)
-        )
-        if not (
-            "sinh viên có hoàn cảnh khó khăn" in claims
-            and "xóa đói giảm nghèo" in claims
-        ):
-            raise ValueError(
-                "Câu trả lời chưa nêu đúng đối tượng sinh viên được cấp trợ cấp xã hội"
-            )
-        if any(
-            phrase in claims
-            for phrase in (
-                "hỗ trợ chi phí học tập",
-                "trẻ em dưới 16 tuổi",
-                "bảo trợ xã hội",
-            )
-        ):
-            raise ValueError(
-                "Không được đánh đồng trợ cấp xã hội với quyền lợi liền kề"
-            )
-
-        for citation in citations:
-            document = citation.get("document")
-            if (
-                not isinstance(document, int)
-                or isinstance(document, bool)
-                or document < 1
-                or document > len(results)
-                or _article_key(results[document - 1]) != allowed_key
-            ):
-                raise ValueError(
-                    "Citation về trợ cấp xã hội phải thuộc đúng điều quy định"
-                )
-        return
-
-    if not (
-        is_tuition_policy_question(question)
-        and is_complete_list_question(question)
-    ):
-        return
-
-    citations = grounded.get("citations")
-    if not isinstance(citations, list) or not citations:
-        raise ValueError("Câu trả lời chưa bao phủ các mức miễn, giảm học phí")
-
-    claims: dict[str, str | None] = {}
-    for citation in citations:
-        if not isinstance(citation, dict):
-            raise ValueError("Citation phải là một object")
-        claim = citation.get("claim")
-        if isinstance(claim, str) and claim.strip():
-            claims.setdefault(_normalized_text(claim), _claim_level(claim))
-
-    counts = {
-        level: sum(value == level for value in claims.values())
-        for level in ("100", "70", "50")
-    }
-    minimum_counts = {"100": 6, "70": 1, "50": 1}
-    requested_levels = requested_tuition_levels(question)
-    if any(counts[level] < minimum_counts[level] for level in requested_levels):
-        if requested_levels != ("100", "70", "50"):
-            requested_summary = ", ".join(
-                f"{minimum_counts[level]} nhóm mức {level}%"
-                for level in requested_levels
-            )
-            raise ValueError(
-                "Câu trả lời chưa bao phủ đủ đối tượng được hỏi: "
-                f"{requested_summary}"
-            )
-        raise ValueError(
-            "Câu trả lời phải có đủ 6 nhóm miễn 100%, 1 nhóm giảm 70% "
-            "và 1 nhóm giảm 50%"
-        )
-
-    anchor = _tuition_anchor(results)
-    allowed_key = _article_key(anchor) if anchor is not None else None
-    if allowed_key is None:
-        raise ValueError(
-            "Chưa tìm được điều quy định trực tiếp về miễn, giảm học phí"
-        )
-
-    for citation in citations:
-        document = citation.get("document")
-        if (
-            not isinstance(document, int)
-            or isinstance(document, bool)
-            or document < 1
-            or document > len(results)
-        ):
-            raise ValueError("Citation chứa document không hợp lệ")
-        if _article_key(results[document - 1]) != allowed_key:
-            raise ValueError(
-                "Citation về miễn, giảm học phí phải thuộc cùng Điều quy định "
-                "miễn, giảm học phí; không được dùng Điều kế bên"
-            )
+    """Validate completeness from information units extracted from context."""
+    analysis = analyze_query(question)
+    units = extract_coverage_units(analysis, results)
+    validate_answer_coverage(units, grounded.get("citations", []))
 
 
 def _select_cited_sources(

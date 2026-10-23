@@ -164,3 +164,36 @@ python -m app.rag.preprocessing
 ```
 
 Các chunks sau xử lý được ghi vào `data/processed/handbook_k67.jsonl`.
+
+## RAG và kiểm thử regression
+
+Pipeline chat giữ Hybrid Retrieval tự xây dựng (TF-IDF + BM25 + RRF +
+reranking), sau đó phân tích dạng câu hỏi, chọn đúng phạm vi Điều/Khoản và chỉ
+mở rộng các mảnh cùng structural scope. Coverage được suy ra từ các mục, điều
+kiện và bước thực tế trong context; không cấu hình trước số claim theo chủ đề.
+
+Chạy toàn bộ unit/regression test:
+
+```bash
+cd backend
+python -m pytest -q
+```
+
+Đo Retrieval Hit@K/MRR trên ground truth:
+
+```bash
+python -m tests.evaluate_ground_truth
+```
+
+Khi Ollama đang chạy và có model `qwen3:4b`, chạy bộ 9 câu end-to-end để đo
+citation correctness, faithfulness, completeness, scope accuracy và abstention
+accuracy:
+
+```bash
+python -m tests.evaluate_rag_regression
+```
+
+Thay đổi logic query/retrieval/validation hiện tại không đổi schema chunk,
+vocabulary hoặc dữ liệu nguồn, vì vậy **không cần rebuild index**. Chỉ rebuild
+`data/processed/tfidf_index.json` khi PDF, preprocessing, tokenizer hoặc chunker
+thay đổi.

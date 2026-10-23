@@ -4,10 +4,9 @@ from app.rag.from_scratch.query_processing import (
     generate_answer_requirements,
     generate_search_queries,
     is_complete_list_question,
-    is_tuition_policy_question,
-    matching_rules,
     normalize_query,
 )
+from app.rag.from_scratch.query_understanding import QueryIntent, analyze_query
 
 
 def test_normalize_query_normalizes_unicode_and_whitespace() -> None:
@@ -22,13 +21,12 @@ def test_normalize_query_normalizes_unicode_and_whitespace() -> None:
     assert unicodedata.is_normalized("NFC", normalized)
 
 
-def test_detects_contextual_academic_terms() -> None:
-    rules = matching_rules("Điểm thấp quá thì có bị đuổi học không?")
+def test_detects_scenario_and_condition_intents() -> None:
+    analysis = analyze_query("Em có đủ điều kiện tốt nghiệp không?")
 
-    assert [rule.name for rule in rules] == [
-        "academic_dismissal",
-        "weak_academic_results",
-    ]
+    assert analysis.has_intent(QueryIntent.FACTUAL_LOOKUP)
+    assert analysis.has_intent(QueryIntent.CONDITIONS)
+    assert analysis.has_intent(QueryIntent.SCENARIO_ELIGIBILITY)
 
 
 def test_generates_bounded_search_queries_and_keeps_original() -> None:
@@ -43,74 +41,66 @@ def test_generates_bounded_search_queries_and_keeps_original() -> None:
         and "buộc thôi học" in query
         for query in queries
     )
-    assert "buộc thôi học do kết quả học tập yếu" in queries
-    assert "cảnh báo kết quả học tập" in queries
+    assert not any("cảnh báo kết quả học tập" == query for query in queries)
 
 
-def test_expands_registration_into_rules_and_instructions() -> None:
-    queries = generate_search_queries("Đăng ký tín chỉ")
+def test_expands_procedure_without_adding_neighboring_rules() -> None:
+    queries = generate_search_queries("Quy trình đăng ký tín chỉ như thế nào?")
 
-    assert queries[0] == "Đăng ký tín chỉ"
-    assert any("hướng dẫn đăng ký học" == query for query in queries)
-    assert any("khối lượng học tập" in query for query in queries)
-
-
-def test_registration_answer_requirements_cover_separate_claims() -> None:
-    requirements = generate_answer_requirements("Đăng ký tín chỉ")
-
-    assert any("mục hướng dẫn đăng ký học" in item for item in requirements)
-    assert any("giới hạn tín chỉ" in item for item in requirements)
-    assert any("hủy hoặc rút học phần" in item for item in requirements)
+    assert queries[0] == "Quy trình đăng ký tín chỉ như thế nào?"
+    assert any(query.startswith("hướng dẫn") for query in queries)
+    assert not any("khối lượng học tập" in query for query in queries)
 
 
-def test_low_score_answer_requirements_preserve_warning_chain() -> None:
+def test_procedure_requirements_are_topic_independent() -> None:
+    requirements = generate_answer_requirements("Quy trình bất kỳ như thế nào?")
+
+    assert any("đúng thứ tự" in item for item in requirements)
+    assert not any("tín chỉ" in item or "học phí" in item for item in requirements)
+
+
+def test_scenario_requirements_do_not_embed_an_answer_chain() -> None:
     requirements = generate_answer_requirements(
         "Điểm thấp quá có bị đuổi học không?"
     )
 
-    assert any("điểm thấp một lần" in item for item in requirements)
-    assert any("ngưỡng điểm" in item for item in requirements)
-    assert any("số lần cảnh báo" in item for item in requirements)
+    assert any("điều kiện" in item for item in requirements)
+    assert not any("số lần cảnh báo" in item for item in requirements)
 
 
-def test_tuition_question_expands_all_three_benefit_levels() -> None:
+def test_enumeration_does_not_expand_unasked_benefit_levels() -> None:
     question = "Đối tượng nào được miễn, giảm học phí?"
 
     queries = generate_search_queries(question)
 
     assert queries[0] == question
-    assert "đối tượng được miễn 100% học phí không phải đóng học phí" in queries
-    assert "đối tượng được giảm 70% học phí" in queries
-    assert "đối tượng được giảm 50% học phí" in queries
+    assert not any("100%" in query or "70%" in query or "50%" in query for query in queries)
     assert is_complete_list_question(question)
-    assert is_tuition_policy_question(question)
 
 
-def test_tuition_answer_requirements_demand_complete_separate_groups() -> None:
+def test_enumeration_requirements_use_context_coverage() -> None:
     requirements = generate_answer_requirements(
         "Những đối tượng sinh viên nào được miễn học phí?"
     )
 
-    assert any("sáu đối tượng" in item and "100%" in item for item in requirements)
-    assert any("70%" in item for item in requirements)
-    assert any("50%" in item for item in requirements)
-    assert any("trợ cấp xã hội" in item for item in requirements)
+    assert any("checklist coverage" in item for item in requirements)
+    assert not any("sáu" in item or "70%" in item or "50%" in item for item in requirements)
 
 
 def test_personal_tuition_question_does_not_require_full_policy_list() -> None:
     question = "Em có được miễn học phí không?"
 
-    assert is_tuition_policy_question(question)
     assert not is_complete_list_question(question)
-    assert generate_answer_requirements(question) == []
+    requirements = generate_answer_requirements(question)
+    assert any("thiếu dữ kiện" in item for item in requirements)
 
 
-def test_expands_generic_official_dismissal_question() -> None:
+def test_condition_expansion_preserves_the_asked_scope() -> None:
     queries = generate_search_queries("Khi nào sinh viên bị buộc thôi học?")
 
     assert queries[0] == "Khi nào sinh viên bị buộc thôi học?"
-    assert "buộc thôi học do kết quả học tập yếu" in queries
-    assert "cảnh báo kết quả học tập" in queries
+    assert any("điều kiện" in query and "buộc thôi học" in query for query in queries)
+    assert not any("cảnh báo" in query for query in queries)
 
 
 def test_does_not_expand_outside_academic_context() -> None:
@@ -160,29 +150,41 @@ def test_short_tuition_list_questions() -> None:
     for question in questions:
         assert is_complete_list_question(question)
         requirements = generate_answer_requirements(question)
-        assert any("sáu đối tượng" in item for item in requirements)
-        assert any("70%" in item for item in requirements)
-        assert any("50%" in item for item in requirements)
+        assert any("checklist coverage" in item for item in requirements)
+        assert not any("sáu" in item or "70%" in item or "50%" in item for item in requirements)
 
 
 def test_specific_full_tuition_exemption_stays_scoped_to_100_percent() -> None:
     question = "Những ai được miễn 100% học phí?"
 
     assert is_complete_list_question(question)
-    assert is_tuition_policy_question(question)
     queries = generate_search_queries(question)
     requirements = generate_answer_requirements(question)
 
     assert any("miễn 100%" in query for query in queries)
     assert not any("70%" in query or "50%" in query for query in queries)
-    assert any("sáu đối tượng" in item for item in requirements)
+    assert any("checklist coverage" in item for item in requirements)
     assert not any("70%" in item or "50%" in item for item in requirements)
 
 
-def test_social_allowance_question_is_not_tuition_policy() -> None:
+def test_social_allowance_uses_the_same_generic_enumeration_requirement() -> None:
     question = "Ai được cấp trợ cấp xã hội?"
 
     assert is_complete_list_question(question)
-    assert not is_tuition_policy_question(question)
     requirements = generate_answer_requirements(question)
-    assert any("không đánh đồng" in item for item in requirements)
+    assert any("checklist coverage" in item for item in requirements)
+
+
+def test_recognizes_all_supported_query_shapes() -> None:
+    examples = {
+        QueryIntent.FACTUAL_LOOKUP: "Hạng tốt nghiệp là gì?",
+        QueryIntent.ENUMERATION: "Liệt kê tất cả trường hợp được nghỉ học.",
+        QueryIntent.CONDITIONS: "Điều kiện tốt nghiệp là gì?",
+        QueryIntent.COMPARISON: "Phân biệt miễn học phí và giảm học phí.",
+        QueryIntent.PROCEDURE: "Thủ tục đăng ký học như thế nào?",
+        QueryIntent.NUMERIC_THRESHOLD: "Tối thiểu bao nhiêu tín chỉ?",
+        QueryIntent.SCENARIO_ELIGIBILITY: "Em có đủ điều kiện tốt nghiệp không?",
+    }
+
+    for intent, question in examples.items():
+        assert analyze_query(question).has_intent(intent)

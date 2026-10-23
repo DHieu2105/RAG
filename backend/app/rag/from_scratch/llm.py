@@ -79,7 +79,11 @@ Nhiệm vụ:
 - Với câu hỏi gồm nhiều ý (ví dụ quy trình thao tác và giới hạn tín chỉ), chỉ
   trả lời ý nào có căn cứ riêng; không dùng căn cứ của ý này để chứng minh ý
   khác. Không đưa nội dung của các kết quả tìm kiếm không liên quan vào câu
-  trả lời."""
+  trả lời.
+- Không suy ra một khẳng định phủ định chỉ vì context không nhắc tới sự việc.
+  Muốn trả lời "không", evidence phải trực tiếp chứa căn cứ phủ định đó.
+- Giữ đúng phạm vi từ ngữ của câu hỏi. Ví dụ một chế độ được hỏi không tự động
+  bao gồm chế độ khác chỉ vì chúng nằm cùng điều hoặc cùng trang."""
 STRUCTURED_SYSTEM_PROMPT = SYSTEM_PROMPT + """
 
 Hãy tạo câu trả lời dưới dạng danh sách claim độc lập để API tự ghép thành câu
@@ -101,6 +105,11 @@ metadata đã kiểm tra.
   bao phủ, không giới hạn số claim: phải tạo đủ claim có căn cứ cho toàn bộ các
   nhóm được hỏi. Không tự mở rộng sang chủ đề kề bên nếu người dùng không hỏi.
 - Không tạo hai claim lặp lại cùng một kết luận bằng cách diễn đạt khác nhau.
+- Nếu user prompt có các dòng `Coverage S...`, đó là các đơn vị thông tin được
+  máy trích trực tiếp từ context. Phải bao phủ từng đơn vị còn thuộc phạm vi
+  câu hỏi, nhưng không được sao chép checklist như một đáp án không kiểm chứng.
+- Mỗi claim trong câu trả lời liệt kê phải tự nêu rõ chế độ/kết quả đang được
+  hỏi; không để người đọc phải suy ra từ claim trước.
 - `evidence` phải là một đoạn sao chép nguyên văn, liên tục từ đúng phần Nội
   dung của [Tài liệu N], đủ để chứng minh `text`; không diễn đạt lại evidence.
 - `clauses` chỉ chứa đúng các khoản thực sự được dùng cho claim. Ví dụ chunk

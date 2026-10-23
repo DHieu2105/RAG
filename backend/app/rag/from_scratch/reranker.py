@@ -42,6 +42,21 @@ CONDITION_ANSWER_CUES = (
     "thuộc diện",
     "nếu ",
 )
+PROCEDURE_QUESTION_CUES = (
+    "quy trình",
+    "thủ tục",
+    "các bước",
+    "làm thế nào",
+    "như thế nào",
+)
+PROCEDURE_ANSWER_CUES = ("bước 1", "hướng dẫn", "trình tự")
+ENUMERATION_QUESTION_CUES = (
+    "liệt kê",
+    "những đối tượng",
+    "đối tượng nào",
+    "ai được",
+    "trường hợp nào",
+)
 
 
 def lexical_terms(text: str) -> set[str]:
@@ -69,13 +84,17 @@ def _answer_cue_score(question: str, text: str) -> float:
     asks_for_condition = any(
         cue in folded_question for cue in CONDITION_QUESTION_CUES
     )
-    if not asks_for_condition:
-        return 0.0
-
-    matches = sum(
-        cue in folded_text for cue in CONDITION_ANSWER_CUES
-    )
-    return min(matches / 2.0, 1.0)
+    scores: list[float] = []
+    if asks_for_condition:
+        matches = sum(cue in folded_text for cue in CONDITION_ANSWER_CUES)
+        scores.append(min(matches / 2.0, 1.0))
+    if any(cue in folded_question for cue in PROCEDURE_QUESTION_CUES):
+        matches = sum(cue in folded_text for cue in PROCEDURE_ANSWER_CUES)
+        scores.append(min(matches / 2.0, 1.0))
+    if any(cue in folded_question for cue in ENUMERATION_QUESTION_CUES):
+        direct_list = "đối tượng" in folded_text and "được" in folded_text
+        scores.append(1.0 if direct_list else 0.0)
+    return max(scores, default=0.0)
 
 
 def rerank_results(
@@ -94,11 +113,20 @@ def rerank_results(
 
     for index, candidate in enumerate(candidates):
         rank_prior = 1.0 / (RANK_OFFSET + index + 1)
-        text_terms = lexical_terms(candidate.get("text", ""))
+        candidate_text = " ".join(
+            str(candidate.get(field) or "")
+            for field in (
+                "part_title",
+                "chapter_title",
+                "article_title",
+                "text",
+            )
+        )
+        text_terms = lexical_terms(candidate_text)
         coverage = _coverage(text_terms, search_queries)
         answer_cue = _answer_cue_score(
             question,
-            candidate.get("text", ""),
+            candidate_text,
         )
         rerank_score = (
             RANK_WEIGHT * rank_prior

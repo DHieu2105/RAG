@@ -2,6 +2,8 @@ from unittest.mock import patch
 
 from app.rag.from_scratch.embeddings import TfidfVectorizer
 from app.rag.from_scratch.pipeline import (
+    INCOMPLETE_CONTEXT_ANSWER,
+    INVALID_CITATION_ANSWER,
     _expand_same_article_context,
     _select_cited_sources,
     _select_sources,
@@ -10,29 +12,6 @@ from app.rag.from_scratch.pipeline import (
     chat,
     chat_with_sources,
 )
-from app.rag.from_scratch.llm import INSUFFICIENT_ANSWER
-
-
-def _tuition_claims(document: int = 1) -> list[dict]:
-    claims = [
-        f"Nhóm miễn 100% học phí số {index}."
-        for index in range(1, 7)
-    ]
-    claims.extend(
-        (
-            "Nhóm này được giảm 70% học phí.",
-            "Nhóm này được giảm 50% học phí.",
-        )
-    )
-    return [
-        {
-            "claim": claim,
-            "document": document,
-            "clauses": [1],
-            "evidence": "Bằng chứng.",
-        }
-        for claim in claims
-    ]
 
 
 def _tuition_results() -> list[dict]:
@@ -208,7 +187,7 @@ def test_claim_coverage_rejects_uncited_answer_sentence() -> None:
     raise AssertionError("Expected ValueError to be raised")
 
 
-def test_complete_list_retrieval_adds_all_chunks_from_anchor_article() -> None:
+def test_complete_list_retrieval_keeps_only_relevant_anchor_scope() -> None:
     article_3_first = {
         "part": "2.6",
         "article": 3,
@@ -240,131 +219,117 @@ def test_complete_list_retrieval_adds_all_chunks_from_anchor_article() -> None:
         [article_3_first, article_3_second, article_4],
     )
 
-    assert expanded[:2] == [article_3_first, article_3_second]
-    assert expanded.count(article_3_second) == 1
-    assert article_4 in expanded
+    assert [chunk["text"] for chunk in expanded] == [article_3_second["text"]]
+    assert all(chunk["article"] == 3 for chunk in expanded)
 
 
-def test_social_allowance_coverage_rejects_adjacent_benefit() -> None:
-    results = [
+def _dynamic_list_results() -> list[dict]:
+    return [
         {
-            "part": "2.6",
-            "article": 4,
-            "article_title": "Điều 4. Các đối tượng sinh viên được cấp trợ cấp xã hội",
-            "clauses": [3],
-            "text": "Sinh viên có hoàn cảnh khó khăn thuộc diện xóa đói giảm nghèo.",
+            "part": "2.9",
+            "article": 8,
+            "article_title": "Điều 8. Danh sách quyền lợi thử nghiệm",
+            "clauses": [1],
+            "page_start": 80,
+            "text": "1. Các quyền lợi gồm: a. Quyền lợi Alpha. b. Quyền lợi Beta. c. Quyền lợi Gamma.",
         }
     ]
-    grounded = {
-        "answer": "Sinh viên có hoàn cảnh khó khăn và trẻ em dưới 16 tuổi.",
-        "citations": [
-            {
-                "claim": "Sinh viên có hoàn cảnh khó khăn thuộc diện xóa đói giảm nghèo và trẻ em dưới 16 tuổi.",
-                "document": 1,
-                "clauses": [3],
-            }
-        ],
-    }
 
+
+def _dynamic_citations() -> list[dict]:
+    return [
+        {
+            "claim": f"Sinh viên có quyền lợi {name}.",
+            "document": 1,
+            "clauses": [1],
+            "evidence": f"{label}. Quyền lợi {name}.",
+        }
+        for label, name in (("a", "Alpha"), ("b", "Beta"), ("c", "Gamma"))
+    ]
+
+
+def test_coverage_accepts_all_units_extracted_from_document() -> None:
+    citations = _dynamic_citations()
+    _validate_required_coverage(
+        "Liệt kê các quyền lợi thử nghiệm.",
+        {"answer": "\n".join(item["claim"] for item in citations), "citations": citations},
+        _dynamic_list_results(),
+    )
+
+
+def test_coverage_has_no_fixed_topic_count() -> None:
+    results = _dynamic_list_results()
+    results[0]["text"] = "1. Các quyền lợi gồm: a. Quyền lợi Alpha. b. Quyền lợi Beta."
+    citations = _dynamic_citations()[:2]
+    _validate_required_coverage(
+        "Liệt kê các quyền lợi thử nghiệm.",
+        {"answer": "\n".join(item["claim"] for item in citations), "citations": citations},
+        results,
+    )
+
+
+def test_coverage_rejects_an_extracted_unit_missing_from_answer() -> None:
+    citations = _dynamic_citations()[:2]
     try:
         _validate_required_coverage(
-            "Ai được cấp trợ cấp xã hội?",
-            grounded,
+            "Liệt kê các quyền lợi thử nghiệm.",
+            {"answer": "\n".join(item["claim"] for item in citations), "citations": citations},
+            _dynamic_list_results(),
+        )
+    except ValueError as error:
+        assert "thiếu các đơn vị evidence" in str(error)
+        return
+    raise AssertionError("Expected ValueError to be raised")
+
+
+def test_coverage_rejects_evidence_bound_to_wrong_document() -> None:
+    results = _dynamic_list_results() + [
+        {"part": "2.9", "article": 9, "clauses": [1], "text": "Nội dung liền kề."}
+    ]
+    citations = _dynamic_citations()
+    citations[-1]["document"] = 2
+    try:
+        _validate_required_coverage(
+            "Liệt kê các quyền lợi thử nghiệm.",
+            {"answer": "\n".join(item["claim"] for item in citations), "citations": citations},
             results,
         )
     except ValueError as error:
-        assert "Không được đánh đồng" in str(error)
+        assert "thiếu các đơn vị evidence" in str(error)
         return
-
-    raise AssertionError("Expected ValueError to be raised")
-
-
-def test_tuition_coverage_accepts_six_plus_one_plus_one_claims() -> None:
-    citations = _tuition_claims()
-    grounded = {
-        "answer": "\n\n".join(citation["claim"] for citation in citations),
-        "citations": citations,
-    }
-
-    _validate_required_coverage(
-        "Đối tượng nào được miễn, giảm học phí?",
-        grounded,
-        _tuition_results(),
-    )
-
-
-def test_tuition_coverage_accepts_only_six_claims_for_explicit_100_percent() -> None:
-    citations = _tuition_claims()[:6]
-    grounded = {
-        "answer": "\n\n".join(citation["claim"] for citation in citations),
-        "citations": citations,
-    }
-
-    _validate_required_coverage(
-        "Những ai được miễn 100% học phí?",
-        grounded,
-        _tuition_results(),
-    )
-
-
-def test_tuition_coverage_rejects_missing_mandatory_group() -> None:
-    citations = _tuition_claims()[:-1]
-    grounded = {
-        "answer": "\n\n".join(citation["claim"] for citation in citations),
-        "citations": citations,
-    }
-
-    try:
-        _validate_required_coverage(
-            "Đối tượng nào được miễn, giảm học phí?",
-            grounded,
-            _tuition_results(),
-        )
-    except ValueError as error:
-        assert "6 nhóm miễn 100%" in str(error)
-        return
-
-    raise AssertionError("Expected ValueError to be raised")
-
-
-def test_tuition_coverage_rejects_citation_from_adjacent_article() -> None:
-    citations = _tuition_claims()
-    citations[-1]["document"] = 2
-    grounded = {
-        "answer": "\n\n".join(citation["claim"] for citation in citations),
-        "citations": citations,
-    }
-
-    try:
-        _validate_required_coverage(
-            "Đối tượng nào được miễn, giảm học phí?",
-            grounded,
-            _tuition_results(),
-        )
-    except ValueError as error:
-        assert "không được dùng Điều kế bên" in str(error)
-        return
-
     raise AssertionError("Expected ValueError to be raised")
 
 
 def test_chat_retries_once_when_tuition_answer_is_incomplete() -> None:
-    results = [_tuition_results()[0]]
-    results[0]["text"] = "Bằng chứng về miễn, giảm học phí."
+    results = [
+        {
+            **_tuition_results()[0],
+            "text": (
+                "1. Đối tượng được miễn học phí gồm: "
+                "a. Sinh viên nhóm Alpha. b. Sinh viên nhóm Beta."
+            ),
+        }
+    ]
     incomplete = {
-        "answer": "Một nhóm được miễn 100% học phí.",
+        "answer": "Sinh viên nhóm Alpha được miễn học phí.",
         "citations": [
             {
-                "claim": "Một nhóm được miễn 100% học phí.",
+                "claim": "Sinh viên nhóm Alpha được miễn học phí.",
                 "document": 1,
                 "clauses": [1],
-                "evidence": "Bằng chứng về miễn, giảm học phí.",
+                "evidence": "a. Sinh viên nhóm Alpha.",
             }
         ],
     }
-    complete_citations = _tuition_claims()
-    for citation in complete_citations:
-        citation["evidence"] = "Bằng chứng về miễn, giảm học phí."
+    complete_citations = [
+        *incomplete["citations"],
+        {
+            "claim": "Sinh viên nhóm Beta được miễn học phí.",
+            "document": 1,
+            "clauses": [1],
+            "evidence": "b. Sinh viên nhóm Beta.",
+        },
+    ]
     complete = {
         "answer": "\n\n".join(
             citation["claim"] for citation in complete_citations
@@ -401,16 +366,23 @@ def test_chat_retries_once_when_tuition_answer_is_incomplete() -> None:
 
 
 def test_chat_returns_insufficient_answer_after_two_invalid_attempts() -> None:
-    results = [_tuition_results()[0]]
-    results[0]["text"] = "Bằng chứng về miễn, giảm học phí."
+    results = [
+        {
+            **_tuition_results()[0],
+            "text": (
+                "1. Đối tượng được miễn học phí gồm: "
+                "a. Sinh viên nhóm Alpha. b. Sinh viên nhóm Beta."
+            ),
+        }
+    ]
     incomplete = {
-        "answer": "Một nhóm được miễn 100% học phí.",
+        "answer": "Sinh viên nhóm Alpha được miễn học phí.",
         "citations": [
             {
-                "claim": "Một nhóm được miễn 100% học phí.",
+                "claim": "Sinh viên nhóm Alpha được miễn học phí.",
                 "document": 1,
                 "clauses": [1],
-                "evidence": "Bằng chứng về miễn, giảm học phí.",
+                "evidence": "a. Sinh viên nhóm Alpha.",
             }
         ],
     }
@@ -432,7 +404,78 @@ def test_chat_returns_insufficient_answer_after_two_invalid_attempts() -> None:
             [],
         )
 
-    assert response == {"answer": INSUFFICIENT_ANSWER, "sources": []}
+    assert response == {
+        "answer": "Đã tìm thấy căn cứ liên quan nhưng câu trả lời sinh ra chưa bao phủ đầy đủ thông tin.",
+        "sources": [],
+    }
+
+
+def test_chat_distinguishes_incomplete_retrieval_context() -> None:
+    results = [
+        {
+            "article": 8,
+            "clauses": [1],
+            "text": "Đối tượng Alpha.",
+            "_context_complete": False,
+        }
+    ]
+    with (
+        patch(
+            "app.rag.from_scratch.pipeline.retrieve_for_chat",
+            return_value=results,
+        ),
+        patch(
+            "app.rag.from_scratch.pipeline.generate_grounded_answer"
+        ) as mocked_generate,
+    ):
+        response = chat_with_sources(
+            "Những đối tượng Alpha nào?",
+            results,
+            object(),
+            [],
+        )
+
+    assert response == {"answer": INCOMPLETE_CONTEXT_ANSWER, "sources": []}
+    mocked_generate.assert_not_called()
+
+
+def test_chat_distinguishes_invalid_citation_from_missing_context() -> None:
+    results = [
+        {
+            "article": 8,
+            "clauses": [1],
+            "text": "Mức Alpha là 12 đơn vị.",
+        }
+    ]
+    invalid = {
+        "answer": "Mức Alpha là 12 đơn vị.",
+        "citations": [
+            {
+                "claim": "Mức Alpha là 12 đơn vị.",
+                "document": 1,
+                "clauses": [1],
+                "evidence": "Đoạn không tồn tại.",
+            }
+        ],
+    }
+    with (
+        patch(
+            "app.rag.from_scratch.pipeline.retrieve_for_chat",
+            return_value=results,
+        ),
+        patch(
+            "app.rag.from_scratch.pipeline.generate_grounded_answer",
+            side_effect=[invalid, invalid],
+        ),
+    ):
+        response = chat_with_sources(
+            "Mức Alpha là gì?",
+            results,
+            object(),
+            [],
+        )
+
+    assert response == {"answer": INVALID_CITATION_ANSWER, "sources": []}
 
 
 def test_select_sources_limits_and_deduplicates_sources() -> None:
@@ -527,7 +570,7 @@ def test_chat_skips_ollama_when_nothing_is_retrieved() -> None:
             vectors,
         )
 
-    assert answer == "Không tìm thấy thông tin liên quan trong sổ tay."
+    assert answer == "Không tìm thấy tài liệu liên quan trong sổ tay."
     mocked_generate_answer.assert_not_called()
 
 
