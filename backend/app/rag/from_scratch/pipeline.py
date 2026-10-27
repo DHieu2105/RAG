@@ -18,6 +18,7 @@ from .grounding import (
     extract_coverage_units,
     prepare_structured_context,
     validate_answer_coverage,
+    validate_answer_style,
     validate_claim_faithfulness,
 )
 from .index_store import INDEX_PATH, load_index, save_index
@@ -27,7 +28,7 @@ from .query_processing import (
     generate_answer_requirements,
     generate_search_queries,
 )
-from .query_understanding import analyze_query
+from .query_understanding import QueryAnalysis, analyze_query, lexical_terms
 from .reranker import rerank_results
 from .retriever import reciprocal_rank_fusion, top_k_search
 
@@ -289,7 +290,54 @@ def retrieve_for_chat(
             top_k=chat_top_k,
         )
 
+    results = _add_title_matches(analysis, results, chunks)
     return _expand_same_article_context(question, results, chunks)
+
+
+def _retrieval_identity(chunk: dict) -> tuple[object, ...]:
+    return (
+        chunk.get("part"),
+        chunk.get("chapter"),
+        chunk.get("article"),
+        tuple(chunk.get("clauses") or []),
+        chunk.get("page_start"),
+        chunk.get("page_end"),
+        chunk.get("text"),
+    )
+
+
+def _add_title_matches(
+    analysis: QueryAnalysis,
+    results: list[dict],
+    chunks: list[dict],
+) -> list[dict]:
+    """Seed strong article-title matches missed by content-only indexes."""
+    focus = set(analysis.focus_terms)
+    if not focus:
+        return results
+
+    scored: list[tuple[dict, float]] = []
+    for chunk in chunks:
+        title = str(chunk.get("article_title") or "")
+        if not title:
+            continue
+        title_terms = set(lexical_terms(title))
+        coverage = len(title_terms & focus) / len(focus)
+        scored.append((chunk, coverage))
+
+    best_coverage = max((coverage for _, coverage in scored), default=0.0)
+    if best_coverage < 0.75:
+        return results
+
+    threshold = max(0.75, best_coverage * 0.9)
+    augmented = list(results)
+    seen = {_retrieval_identity(result) for result in results}
+    for chunk, coverage in scored:
+        identity = _retrieval_identity(chunk)
+        if coverage >= threshold and identity not in seen:
+            augmented.append(chunk)
+            seen.add(identity)
+    return augmented
 
 
 def _expand_same_article_context(
@@ -378,6 +426,7 @@ def chat_with_sources(
                 results,
                 grounded["citations"],
             )
+            validate_answer_style(analysis, grounded["citations"])
             validate_answer_coverage(coverage_units, grounded["citations"])
         except AnswerCoverageError as error:
             validation_error = error

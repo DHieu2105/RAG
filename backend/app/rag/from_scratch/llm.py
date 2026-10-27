@@ -1,6 +1,7 @@
 """Generate grounded answers with Ollama using the standard library."""
 
 import json
+import re
 from typing import Any
 from urllib.request import Request, urlopen
 
@@ -92,6 +93,24 @@ metadata đã kiểm tra.
 
 - Mỗi `text` chỉ chứa một ý có thể kiểm chứng. Mỗi sự kiện, quy định, con số,
   điều kiện hoặc kết luận phải có ít nhất một citation trực tiếp chứng minh.
+- `text` là phần trả lời dành cho người đọc: phải diễn giải ngắn gọn bằng ngôn ngữ
+  tự nhiên, không chép nguyên cả đoạn tài liệu và không lặp lại nội dung dài đã đặt
+  trong `evidence`. Giữ nguyên các tỷ lệ, điều kiện và ngoại lệ làm thay đổi kết quả.
+- Với câu hỏi liệt kê, tách các nhóm đối tượng độc lập thành các claim riêng; không
+  dồn nhiều nhóm vào một câu dài bằng chuỗi dấu chấm phẩy. Mỗi claim tự nêu rõ chế
+  độ áp dụng, ví dụ `Miễn 100%:` hoặc `Giảm 70%:`.
+- Sau nhãn chế độ, mỗi claim bắt buộc phải nêu rõ ai thuộc nhóm đó hoặc điều kiện
+  nào phải thỏa. Tuyệt đối không trả một nhãn rỗng như `Miễn 100%:` hay
+  `Giảm 70%:` mà không có nội dung giải thích phía sau.
+- Có thể tóm tắt các trường hợp con nằm bên trong cùng một `Coverage S...` bằng
+  tên nhóm pháp lý khái quát. Không được dùng một Coverage unit để đại diện, gộp
+  hoặc bỏ qua một Coverage unit khác; mỗi nhãn Coverage phải có claim và citation
+  riêng. Phần trích nguyên văn đầy đủ vẫn đặt trong `evidence`.
+- Với câu hỏi liệt kê tổng quan không có yêu cầu "chi tiết", "cụ thể", "tất cả"
+  hoặc "đầy đủ", mỗi claim nên tối đa khoảng 60 từ. Nếu một Coverage unit nêu tên
+  nhóm rồi có phần `Cụ thể:` liệt kê ví dụ, chỉ diễn giải tên nhóm trong `text`,
+  không chép danh sách ví dụ, không thêm ngoặc liệt kê và không viết `v.v.`; vẫn
+  trích đoạn gốc trong `evidence`.
 - Với câu hỏi hỏi một hệ quả có xảy ra hay không, phải tách đủ: câu trả lời
   trực tiếp, ngưỡng/điều kiện tạo ra trạng thái trung gian, và điều kiện dẫn
   từ trạng thái đó tới hệ quả. Không được nhảy thẳng tới hệ quả.
@@ -107,7 +126,8 @@ metadata đã kiểm tra.
 - Không tạo hai claim lặp lại cùng một kết luận bằng cách diễn đạt khác nhau.
 - Nếu user prompt có các dòng `Coverage S...`, đó là các đơn vị thông tin được
   máy trích trực tiếp từ context. Phải bao phủ từng đơn vị còn thuộc phạm vi
-  câu hỏi, nhưng không được sao chép checklist như một đáp án không kiểm chứng.
+  câu hỏi bằng một claim riêng theo đúng thứ tự, nhưng không được sao chép
+  checklist như một đáp án không kiểm chứng.
 - Mỗi claim trong câu trả lời liệt kê phải tự nêu rõ chế độ/kết quả đang được
   hỏi; không để người đọc phải suy ra từ claim trước.
 - `evidence` phải là một đoạn sao chép nguyên văn, liên tục từ đúng phần Nội
@@ -129,6 +149,66 @@ metadata đã kiểm tra.
   chủ đề nhưng không trực tiếp chứng minh claim.
 - Nếu không có claim nào đủ căn cứ, trả `{"claims":[]}`. Không tự tạo
   citation."""
+
+
+_DETAIL_REQUEST_CUES = ("chi tiết", "cụ thể", "tất cả", "đầy đủ")
+
+
+def _concise_reader_claim(
+    question: str,
+    claim_text: str,
+    claim_citations: list[object],
+) -> str:
+    """Remove copied example lists while preserving their cited category."""
+    folded_question = question.casefold()
+    if any(cue in folded_question for cue in _DETAIL_REQUEST_CUES):
+        return claim_text
+    if len(claim_text.split()) <= 40:
+        return claim_text
+
+    evidence_with_examples = next(
+        (
+            str(citation.get("evidence"))
+            for citation in claim_citations
+            if isinstance(citation, dict)
+            and isinstance(citation.get("evidence"), str)
+            and "cụ thể:" in citation["evidence"].casefold()
+        ),
+        None,
+    )
+    if evidence_with_examples is None:
+        return claim_text
+
+    label, separator, description = claim_text.partition(":")
+    if separator:
+        summarized_description = description.split("(", 1)[0].strip(" .;,")
+        if 3 <= len(summarized_description.split()) <= 30:
+            return f"{label.strip()}: {summarized_description}."
+
+    category_prefix = re.split(
+        r"cụ\s+thể\s*:",
+        evidence_with_examples,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    grounded_summary = re.sub(r"^\s*\d+\.\s*", "", category_prefix)
+    grounded_summary = re.sub(
+        r"(?i)\s+(?<!\w)[a-zđ]\.\s+",
+        ": ",
+        grounded_summary,
+        count=1,
+    ).strip(" .;,")
+    item_markers = list(
+        re.finditer(r"(?i)(?<!\w)[a-zđ]\.\s+", category_prefix)
+    )
+    if item_markers:
+        category_prefix = category_prefix[item_markers[-1].end():]
+    category = category_prefix.strip(" .;,")
+    if separator and category:
+        return f"{label.strip()}: {category}."
+    if grounded_summary:
+        return grounded_summary + "."
+    return claim_text
 
 
 def _request_ollama(
@@ -227,7 +307,11 @@ def generate_grounded_answer(
         ):
             raise ValueError("Ollama trả về một claim không hợp lệ")
 
-        claim_text = claim["text"].strip()
+        claim_text = _concise_reader_claim(
+            question,
+            claim["text"].strip(),
+            claim["citations"],
+        )
         answer_parts.append(claim_text)
         for citation in claim["citations"]:
             if (
@@ -255,4 +339,7 @@ def generate_grounded_answer(
 
     if not answer_parts:
         return {"answer": INSUFFICIENT_ANSWER, "citations": []}
-    return {"answer": "\n\n".join(answer_parts), "citations": citations}
+    answer = answer_parts[0]
+    if len(answer_parts) > 1:
+        answer = "\n".join(f"- {part}" for part in answer_parts)
+    return {"answer": answer, "citations": citations}

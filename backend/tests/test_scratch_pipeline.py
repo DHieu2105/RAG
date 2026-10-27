@@ -4,6 +4,7 @@ from app.rag.from_scratch.embeddings import TfidfVectorizer
 from app.rag.from_scratch.pipeline import (
     INCOMPLETE_CONTEXT_ANSWER,
     INVALID_CITATION_ANSWER,
+    _add_title_matches,
     _expand_same_article_context,
     _select_cited_sources,
     _select_sources,
@@ -12,6 +13,7 @@ from app.rag.from_scratch.pipeline import (
     chat,
     chat_with_sources,
 )
+from app.rag.from_scratch.query_understanding import analyze_query
 
 
 def _tuition_results() -> list[dict]:
@@ -35,6 +37,41 @@ def _tuition_results() -> list[dict]:
             "text": "Các đối tượng được hưởng trợ cấp xã hội.",
         },
     ]
+
+
+def test_title_match_rescues_relevant_article_missed_by_content_ranking() -> None:
+    question = "Ai được miễn học phí?"
+    wrong = {
+        "part": "2.1",
+        "article": 7,
+        "article_title": "Điều 7. Tổ chức đăng ký học tập",
+        "clauses": [5],
+        "page_start": 20,
+        "text": "Sinh viên được miễn học phần đã được công nhận tín chỉ.",
+    }
+    target = {
+        "part": "2.6",
+        "article": 3,
+        "article_title": "Điều 3. Các đối tượng được miễn, giảm học phí",
+        "clauses": [1],
+        "page_start": 47,
+        "text": "1. Nhóm Alpha được miễn 100% học phí.",
+    }
+
+    augmented = _add_title_matches(
+        analyze_query(question),
+        [wrong],
+        [wrong, target],
+    )
+    selected = _expand_same_article_context(
+        question,
+        augmented,
+        [wrong, target],
+    )
+
+    assert target in augmented
+    assert [chunk["article"] for chunk in selected] == [3]
+    assert [chunk["clauses"] for chunk in selected] == [[1]]
 
 
 def test_select_cited_sources_keeps_only_model_selected_clauses() -> None:

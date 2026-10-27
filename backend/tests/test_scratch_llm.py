@@ -7,6 +7,7 @@ from app.rag.from_scratch.llm import (
     INSUFFICIENT_ANSWER,
     MODEL_NAME,
     OLLAMA_URL,
+    _concise_reader_claim,
     generate_answer,
     generate_grounded_answer,
 )
@@ -145,6 +146,125 @@ def test_generate_grounded_answer_accepts_exact_insufficient_response() -> None:
         result = generate_grounded_answer("Câu hỏi", "Tài liệu")
 
     assert result == {"answer": INSUFFICIENT_ANSWER, "citations": []}
+
+
+def test_generate_grounded_answer_formats_multiple_claims_as_bullets() -> None:
+    claims = [
+        {
+            "text": "Miễn 100%: sinh viên thuộc nhóm Alpha.",
+            "citations": [
+                {
+                    "document": 1,
+                    "clauses": [1],
+                    "evidence": "Nhóm Alpha được miễn 100% học phí.",
+                }
+            ],
+        },
+        {
+            "text": "Giảm 70%: sinh viên thuộc nhóm Beta.",
+            "citations": [
+                {
+                    "document": 2,
+                    "clauses": [2],
+                    "evidence": "Nhóm Beta được giảm 70% học phí.",
+                }
+            ],
+        },
+    ]
+    ollama_response = BytesIO(
+        json.dumps(
+            {"message": {"content": json.dumps({"claims": claims})}}
+        ).encode("utf-8")
+    )
+
+    with patch(
+        "app.rag.from_scratch.llm.urlopen",
+        return_value=ollama_response,
+    ):
+        result = generate_grounded_answer("Câu hỏi", "Tài liệu")
+
+    assert result["answer"] == (
+        "- Miễn 100%: sinh viên thuộc nhóm Alpha.\n"
+        "- Giảm 70%: sinh viên thuộc nhóm Beta."
+    )
+    assert len(result["citations"]) == 2
+
+
+def test_generate_grounded_answer_summarizes_examples_for_broad_question() -> None:
+    long_claim = (
+        "Miễn 100% học phí: Đối tượng theo Pháp lệnh Ưu đãi người có công "
+        "với cách mạng (anh hùng lực lượng vũ trang, thương binh, bệnh binh, "
+        "thân nhân liệt sĩ và nhiều trường hợp con khác được liệt kê trong "
+        "quy định áp dụng cho sinh viên đang theo học tại trường)."
+    )
+    evidence = (
+        "a. Các đối tượng theo Pháp lệnh Ưu đãi người có công với cách mạng. "
+        "Cụ thể: Anh hùng lực lượng vũ trang; thương binh; bệnh binh."
+    )
+    ollama_response = BytesIO(
+        json.dumps(
+            {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "claims": [
+                                {
+                                    "text": long_claim,
+                                    "citations": [
+                                        {
+                                            "document": 1,
+                                            "clauses": [1],
+                                            "evidence": evidence,
+                                        }
+                                    ],
+                                }
+                            ]
+                        }
+                    )
+                }
+            }
+        ).encode("utf-8")
+    )
+
+    with patch(
+        "app.rag.from_scratch.llm.urlopen",
+        return_value=ollama_response,
+    ):
+        result = generate_grounded_answer(
+            "Ai được miễn, giảm học phí?",
+            "Tài liệu",
+        )
+
+    expected = (
+        "Miễn 100% học phí: Đối tượng theo Pháp lệnh Ưu đãi người có công "
+        "với cách mạng."
+    )
+    assert result["answer"] == expected
+    assert result["citations"][0]["claim"] == expected
+    assert result["citations"][0]["evidence"] == evidence
+
+
+def test_concise_reader_claim_uses_evidence_when_claim_has_no_label_colon() -> None:
+    claim = (
+        "Sinh viên được miễn 100% học phí nếu thuộc diện người có công, bao gồm "
+        + " ".join(["nhiều trường hợp"] * 20)
+    )
+    evidence = (
+        "1. Đối tượng sinh viên được miễn 100% học phí "
+        "a. Các đối tượng theo Pháp lệnh Ưu đãi người có công với cách mạng. "
+        "Cụ thể: Anh hùng; thương binh; bệnh binh."
+    )
+
+    concise = _concise_reader_claim(
+        "Ai được miễn học phí?",
+        claim,
+        [{"evidence": evidence}],
+    )
+
+    assert concise == (
+        "Đối tượng sinh viên được miễn 100% học phí: Các đối tượng theo "
+        "Pháp lệnh Ưu đãi người có công với cách mạng."
+    )
 
 
 if __name__ == "__main__":

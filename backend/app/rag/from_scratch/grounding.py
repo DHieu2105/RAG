@@ -292,6 +292,11 @@ def prepare_structured_context(
         else 0.9
     )
     scope_threshold = max(0.35, best_score * threshold_ratio)
+    title_anchored_enumeration = (
+        bool(anchor_articles)
+        and best_title_coverage >= 0.75
+        and analysis.has_intent(QueryIntent.ENUMERATION)
+    )
     focus_coverages: dict[tuple[object, ...], float] = {}
     for chunk, _ in scored:
         key = _scope_key(chunk)
@@ -308,7 +313,7 @@ def prepare_structured_context(
     selected_scope_keys = {
         _scope_key(chunk)
         for chunk, score in scored
-        if score >= scope_threshold
+        if (title_anchored_enumeration or score >= scope_threshold)
         and focus_coverages[_scope_key(chunk)] >= best_focus_coverage
         and (
             not analysis.has_intent(QueryIntent.CONDITIONS)
@@ -371,24 +376,33 @@ def context_is_relevant(
     *,
     known_terms: set[str] | None = None,
 ) -> bool:
-    """Reject merely relative matches that do not contain the asked concept."""
     if not results:
         return False
     focus = set(analysis.focus_terms)
     if not focus:
         return True
+
+    title_terms = set()
+    for chunk in results:
+        title = str(chunk.get("article_title") or "")
+        title_terms.update(lexical_terms(title))
+
     if known_terms is not None:
-        out_of_vocabulary = {term for term in focus if term not in known_terms}
-        if out_of_vocabulary:
+        normalized_vocabulary = set()
+        for term in known_terms:
+            normalized_vocabulary.update(lexical_terms(term))
+        searchable_terms = normalized_vocabulary | title_terms
+        if focus - searchable_terms:
             return False
 
     best_coverage = 0.0
     for chunk in results:
-        relevance_text = str(chunk.get("text") or "")
-        if not chunk.get("clauses") and chunk.get("article_title"):
-            relevance_text = f"{chunk['article_title']} {relevance_text}"
+        title = str(chunk.get("article_title") or "")
+        content = str(chunk.get("text") or "")
+        relevance_text = f"{title} {content}"
         terms = set(lexical_terms(relevance_text))
-        best_coverage = max(best_coverage, len(terms & focus) / len(focus))
+        coverage = len(terms & focus) / len(focus)
+        best_coverage = max(best_coverage, coverage)
     return best_coverage >= 0.75
 
 
@@ -461,7 +475,15 @@ def extract_coverage_units(
 
 def coverage_requirements(units: list[CoverageUnit]) -> list[str]:
     """Render bounded evidence-derived hints for the answer model."""
-    requirements: list[str] = []
+    if not units:
+        return []
+
+    labels = ", ".join(unit.key for unit in units)
+    requirements = [
+        f"Checklist có {len(units)} đơn vị độc lập ({labels}). "
+        f"Phải tạo ít nhất {len(units)} claim theo đúng thứ tự, mỗi đơn vị có "
+        "claim và citation riêng; không dùng một đơn vị để thay cho đơn vị khác."
+    ]
     for unit in units:
         excerpt = " ".join(unit.text.split())
         if len(excerpt) > 320:
@@ -510,6 +532,31 @@ def validate_answer_coverage(
         )
 
 
+def validate_answer_style(
+    analysis: QueryAnalysis,
+    citations: list[dict],
+) -> None:
+    """Keep broad list answers concise without weakening evidence checks."""
+    if not analysis.has_intent(QueryIntent.ENUMERATION):
+        return
+    question = analysis.normalized_question.casefold()
+    if any(
+        cue in question
+        for cue in ("chi tiết", "cụ thể", "tất cả", "đầy đủ")
+    ):
+        return
+
+    for citation in citations:
+        evidence = str(citation.get("evidence") or "")
+        claim = str(citation.get("claim") or "")
+        if "cụ thể:" in evidence.casefold() and len(claim.split()) > 40:
+            raise AnswerCoverageError(
+                "Claim đang chép danh sách ví dụ sau 'Cụ thể:' quá dài; "
+                "hãy chỉ nêu ngắn gọn tên nhóm pháp lý trong claim và giữ "
+                "đoạn nguyên văn ở evidence"
+            )
+
+
 def _numeric_tokens(text: str) -> set[str]:
     return set(re.findall(r"(?<!\w)\d+(?:[.,]\d+)?%?", text))
 
@@ -546,7 +593,21 @@ def validate_claim_faithfulness(
             )
 
         focus = set(analysis.focus_terms)
-        if focus and len(focus & scope_terms) / len(focus) < 0.75:
+        descriptive_terms = {
+            term
+            for term in claim_terms - focus
+            if any(character.isalpha() for character in term)
+        }
+        if not descriptive_terms:
+            raise CitationValidationError(
+                "Claim chỉ nêu nhãn hoặc tỷ lệ mà chưa nêu đối tượng hay điều kiện áp dụng"
+            )
+        claim_focus = focus & set(lexical_terms(claim))
+        required_focus = claim_focus or focus
+        if (
+            required_focus
+            and len(required_focus & scope_terms) / len(required_focus) < 0.75
+        ):
             raise CitationValidationError(
                 "Citation không thuộc đúng phạm vi khái niệm của câu hỏi"
             )
