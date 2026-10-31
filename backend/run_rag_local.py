@@ -1,11 +1,14 @@
-﻿import sys
+import sys
 import time
 
 from app.rag.from_scratch.index_store import load_index
 from app.rag.from_scratch.bm25 import build_bm25_index
 from app.rag.from_scratch.pipeline import chat_with_sources
 
-sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stdin, "reconfigure"):
+    sys.stdin.reconfigure(encoding="utf-8")
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 print("Đang tải RAG Index...")
 chunks, vectorizer, vectors = load_index()
@@ -19,6 +22,7 @@ print("Gõ exit để thoát.")
 
 while True:
     question = input("\nNhập câu hỏi: ").strip()
+    print("DEBUG QUESTION:", repr(question))
 
     if question.lower() == "exit":
         break

@@ -271,13 +271,25 @@ def prepare_structured_context(
             if _article_key(fragment) is not None and score >= anchor_threshold
         }
 
+    title_anchored_enumeration = (
+        bool(anchor_articles)
+        and best_title_coverage >= 0.75
+        and analysis.has_intent(QueryIntent.ENUMERATION)
+    )
+
     expanded_chunks = list(results)
-    if anchor_articles:
+    if title_anchored_enumeration:
         expanded_chunks = [
             chunk for chunk in results if _article_key(chunk) in anchor_articles
         ]
         expanded_chunks.extend(
             chunk for chunk in all_chunks if _article_key(chunk) in anchor_articles
+        )
+    elif anchor_articles:
+        # Anchor chỉ dùng để mở rộng ngữ cảnh, không loại kết quả từ Điều khác.
+        expanded_chunks.extend(
+            chunk for chunk in all_chunks
+            if _article_key(chunk) in anchor_articles
         )
     candidates = _deduplicate(
         fragment
@@ -286,60 +298,114 @@ def prepare_structured_context(
     )
     scored = [(chunk, _scope_score(analysis, chunk)) for chunk in candidates]
     best_score = max((score for _, score in scored), default=0.0)
-    threshold_ratio = (
-        0.82
-        if "khi nào" in analysis.normalized_question.casefold()
-        else 0.9
+
+    condition_cues = (
+        "điều kiện sau",
+        "trường hợp",
+        "nếu ",
+        "sẽ bị",
+        "đối với",
+        " mà ",
     )
+    is_condition_query = analysis.has_intent(QueryIntent.CONDITIONS)
+
+    # Nới ngưỡng riêng cho câu hỏi điều kiện.
+    if is_condition_query:
+        threshold_ratio = 0.80
+    elif "khi nào" in analysis.normalized_question.casefold():
+        threshold_ratio = 0.82
+    else:
+        threshold_ratio = 0.90
+
     scope_threshold = max(0.35, best_score * threshold_ratio)
+
     title_anchored_enumeration = (
         bool(anchor_articles)
         and best_title_coverage >= 0.75
         and analysis.has_intent(QueryIntent.ENUMERATION)
     )
-    focus_coverages: dict[tuple[object, ...], float] = {}
-    for chunk, _ in scored:
-        key = _scope_key(chunk)
-        coverage_text = chunk["text"]
-        if not chunk.get("clauses") and chunk.get("article_title"):
-            coverage_text = f"{chunk['article_title']} {coverage_text}"
-        coverage = (
-            len(set(lexical_terms(coverage_text)) & focus) / len(focus)
-            if focus
-            else 1.0
-        )
-        focus_coverages[key] = max(focus_coverages.get(key, 0.0), coverage)
-    best_focus_coverage = max(focus_coverages.values(), default=0.0)
-    selected_scope_keys = {
-        _scope_key(chunk)
+
+    # Nếu đã có kết quả Điều/Khoản đủ mạnh,
+    # ưu tiên các quy định có cấu trúc Điều/Khoản (loại trừ tài liệu nhiễu không có Điều/Khoản).
+    structured_scopes = [
+        (chunk, score)
         for chunk, score in scored
-        if (title_anchored_enumeration or score >= scope_threshold)
-        and focus_coverages[_scope_key(chunk)] >= best_focus_coverage
-        and (
-            not analysis.has_intent(QueryIntent.CONDITIONS)
-            or any(
-                cue in chunk["text"].casefold()
-                for cue in (
-                    "điều kiện sau",
-                    "trường hợp",
-                    "nếu ",
-                    "sẽ bị",
-                    "đối với",
-                    " mà ",
-                )
-            )
-        )
-    }
-    if not selected_scope_keys and scored:
-        # Do not erase a direct factual passage merely because it lacks one of
-        # the optional linguistic condition cues used for reranking.
-        fallback_score = max(score for _, score in scored)
+        if chunk.get("article") is not None
+    ]
+    has_strong_structured_match = any(
+        score >= scope_threshold
+        for _, score in structured_scopes
+    )
+
+    candidate_pool = (
+        structured_scopes
+        if has_strong_structured_match
+        else scored
+    )
+
+    if title_anchored_enumeration:
         selected_scope_keys = {
             _scope_key(chunk)
-            for chunk, score in scored
-            if score == fallback_score
-            and focus_coverages[_scope_key(chunk)] >= best_focus_coverage
+            for chunk, score in candidate_pool
+            if _article_key(chunk) in anchor_articles
         }
+    else:
+        selected_scope_keys = {
+            _scope_key(chunk)
+            for chunk, score in candidate_pool
+            if score >= scope_threshold
+            and (
+                not is_condition_query
+                or any(
+                    cue in str(chunk.get("text") or "").casefold()
+                    for cue in condition_cues
+                )
+            )
+        }
+
+    if not selected_scope_keys and candidate_pool:
+        # Do not erase a direct factual passage merely because it lacks one of
+        # the optional linguistic condition cues used for reranking.
+        fallback_score = max(score for _, score in candidate_pool)
+        selected_scope_keys = {
+            _scope_key(chunk)
+            for chunk, score in candidate_pool
+            if score == fallback_score
+        }
+
+    if "buộc thôi học" in analysis.normalized_question.casefold():
+        print("\n========== STRUCTURE SCORING ==========")
+        print("Focus terms:", analysis.focus_terms)
+        print(f"Best score: {best_score:.4f}")
+        print(f"Scope threshold: {scope_threshold:.4f}")
+        print("Anchor articles:", anchor_articles)
+        print("Title anchored enumeration:", title_anchored_enumeration)
+        condition_cues = (
+            "điều kiện sau",
+            "trường hợp",
+            "nếu ",
+            "sẽ bị",
+            "đối với",
+            " mà ",
+        )
+        for chunk, score in sorted(
+            scored,
+            key=lambda item: item[1],
+            reverse=True,
+        ):
+            key = _scope_key(chunk)
+            text = str(chunk.get("text") or "")
+            has_condition_cue = any(
+                cue in text.casefold() for cue in condition_cues
+            )
+            is_selected = key in selected_scope_keys
+            print(
+                f"\nScore: {score:.4f} | Selected: {is_selected} | HasCue: {has_condition_cue} "
+                f"| Phần {chunk.get('part')} | Điều {chunk.get('article')} | Khoản {chunk.get('clauses')} | {chunk.get('article_title')}"
+            )
+            first_line = " ".join(text.split())[:120]
+            print(f"  Snippet: {first_line}")
+        print("========== END STRUCTURE SCORING ==========\n")
     scoped = [chunk for chunk in candidates if _scope_key(chunk) in selected_scope_keys]
     scoped.sort(
         key=lambda chunk: (

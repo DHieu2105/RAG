@@ -2,6 +2,7 @@
 
 import re
 import sys
+import unicodedata
 from enum import Enum
 
 from app.rag.loader import PDF_PATH, load_pdf
@@ -40,6 +41,7 @@ MAX_CONTEXT_CHARS = 16_000
 MAX_CONTEXT_CHUNKS = 16
 MAX_GENERATION_ATTEMPTS = 2
 ORIGINAL_QUERY_WEIGHT = 1.1
+DEBUG_RAG = True
 NO_RELEVANT_DOCUMENT_ANSWER = "Không tìm thấy tài liệu liên quan trong sổ tay."
 INCOMPLETE_CONTEXT_ANSWER = (
     "Đã tìm thấy tài liệu liên quan nhưng ngữ cảnh truy xuất chưa đủ để trả lời chắc chắn."
@@ -249,6 +251,18 @@ def chat(
         bm25_index=bm25_index,
         retrieval_mode=retrieval_mode,
     )
+    if DEBUG_RAG:
+        print("\n========== DEBUG RETRIEVAL ==========")
+        for index, chunk in enumerate(results, start=1):
+            print(
+                f"\n[Tài liệu {index}] "
+                f"Phần {chunk.get('part')} | "
+                f"Điều {chunk.get('article')} | "
+                f"Khoản {chunk.get('clauses')} | "
+                f"Trang {chunk.get('page_start')}-{chunk.get('page_end')}"
+            )
+            print(chunk.get("text", ""))
+        print("\n========== END DEBUG RETRIEVAL ==========\n")
     if not results:
         return NO_RELEVANT_DOCUMENT_ANSWER
     return generate_answer(question, build_context(results))
@@ -289,6 +303,18 @@ def retrieve_for_chat(
             active_bm25_index,
             top_k=chat_top_k,
         )
+
+    if DEBUG_RAG:
+        print("\n========== RAW RETRIEVAL ==========")
+        for index, chunk in enumerate(results, start=1):
+            print(
+                f"[RAW {index}] "
+                f"Score: {chunk.get('score')} | "
+                f"Điều {chunk.get('article')} | "
+                f"Khoản {chunk.get('clauses')} | "
+                f"{chunk.get('article_title')}"
+            )
+        print("========== END RAW RETRIEVAL ==========\n")
 
     results = _add_title_matches(analysis, results, chunks)
     return _expand_same_article_context(question, results, chunks)
@@ -379,6 +405,18 @@ def chat_with_sources(
         bm25_index=bm25_index,
         retrieval_mode=retrieval_mode,
     )
+    if DEBUG_RAG:
+        print("\n========== DEBUG RETRIEVAL ==========")
+        for index, chunk in enumerate(results, start=1):
+            print(
+                f"\n[Tài liệu {index}] "
+                f"Phần {chunk.get('part')} | "
+                f"Điều {chunk.get('article')} | "
+                f"Khoản {chunk.get('clauses')} | "
+                f"Trang {chunk.get('page_start')}-{chunk.get('page_end')}"
+            )
+            print(chunk.get("text", ""))
+        print("\n========== END DEBUG RETRIEVAL ==========\n")
     known_terms = getattr(vectorizer, "vocabulary", None)
     if isinstance(known_terms, dict):
         known_terms = set(known_terms)
@@ -397,6 +435,7 @@ def chat_with_sources(
     final_failure = "generation"
 
     for attempt in range(MAX_GENERATION_ATTEMPTS):
+        grounded = None
         attempt_requirements = list(answer_requirements)
         if validation_error is not None:
             attempt_requirements.append(
@@ -429,12 +468,26 @@ def chat_with_sources(
             validate_answer_style(analysis, grounded["citations"])
             validate_answer_coverage(coverage_units, grounded["citations"])
         except AnswerCoverageError as error:
+            if DEBUG_RAG:
+                print(
+                    f"[DEBUG][ATTEMPT {attempt + 1}] "
+                    f"AnswerCoverageError: {error}"
+                )
             validation_error = error
             final_failure = "generation"
             if attempt + 1 == MAX_GENERATION_ATTEMPTS:
                 return {"answer": INCOMPLETE_GENERATION_ANSWER, "sources": []}
             continue
         except (CitationValidationError, ValueError) as error:
+            if DEBUG_RAG:
+                print(
+                    f"[DEBUG][ATTEMPT {attempt + 1}] "
+                    f"{type(error).__name__}: {error}"
+                )
+                if grounded is not None:
+                    print("[DEBUG] ANSWER:", grounded.get("answer"))
+                    for citation in grounded.get("citations", []):
+                        print("[DEBUG] CITATION:", citation)
             validation_error = error
             final_failure = "citation"
             if attempt + 1 == MAX_GENERATION_ATTEMPTS:
@@ -454,7 +507,8 @@ def _normalized_text(value: str) -> str:
 
 
 def _normalized_evidence(value: str) -> str:
-    """Normalize typographic punctuation without changing evidence words."""
+    """Normalize Unicode and typographic punctuation for evidence checks."""
+    value = unicodedata.normalize("NFC", value)
     punctuation = str.maketrans(
         {
             "“": '"',
