@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, MouseEvent as ReactMouseEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, Fragment, MouseEvent as ReactMouseEvent, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 
 const APP_NAME = "UTC Assistant";
@@ -80,6 +80,8 @@ const LEGACY_ACTIVE_KEY = "uniguide-active-conversation";
 type Conversation = {
   id: string;
   title: string;
+  createdAt?: number;
+  updatedAt?: number;
   messages: Message[];
 };
 
@@ -88,6 +90,7 @@ type Message = {
   content: string;
   sources?: Source[];
   status?: "sending" | "failed";
+  timestamp?: number;
 };
 
 type Source = {
@@ -103,6 +106,40 @@ type Source = {
   claims?: string[];
   evidence?: string[];
 };
+
+function isSameCalendarDay(t1?: number, t2?: number): boolean {
+  if (!t1 || !t2) return true;
+  const d1 = new Date(t1);
+  const d2 = new Date(t2);
+  return (
+    d1.getFullYear() === d2.getFullYear() &&
+    d1.getMonth() === d2.getMonth() &&
+    d1.getDate() === d2.getDate()
+  );
+}
+
+function formatDateLabel(timestamp?: number): string {
+  if (!timestamp) return "HÔM NAY";
+
+  const date = new Date(timestamp);
+  const now = new Date();
+
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startOfYesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1).getTime();
+  const startOfMsgDate = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+
+  if (startOfMsgDate === startOfToday) {
+    return "HÔM NAY";
+  }
+  if (startOfMsgDate === startOfYesterday) {
+    return "HÔM QUA";
+  }
+
+  const dd = String(date.getDate()).padStart(2, "0");
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const yyyy = date.getFullYear();
+  return `${dd}/${mm}/${yyyy}`;
+}
 
 const defaultConversations: Conversation[] = [];
 
@@ -121,6 +158,7 @@ function loadConversations(): Conversation[] {
       && Array.isArray(conversation.messages)
     )) ? parsedConversations.map((conversation) => ({
       ...conversation,
+      createdAt: conversation.createdAt ?? Date.now(),
       messages: conversation.messages.map((message) => (
         message.status === "sending" ? { ...message, status: "failed" } : message
       )),
@@ -741,15 +779,17 @@ export default function Home() {
         : conversation?.messages.slice(0, retryMessageIndex) ?? []
     ).filter((message) => message.status !== "failed");
 
+    const now = Date.now();
     setConversations((current) => {
       if (current.some((item) => item.id === conversationId)) {
         return current.map((item) => item.id === conversationId
           ? {
               ...item,
+              updatedAt: now,
               messages: retryMessageIndex === undefined
-                ? [...item.messages, { role: "user", content: value, status: "sending" }]
+                ? [...item.messages, { role: "user", content: value, status: "sending", timestamp: now }]
                 : item.messages.map((message, index) => (
-                    index === retryMessageIndex ? { ...message, status: "sending" } : message
+                    index === retryMessageIndex ? { ...message, status: "sending", timestamp: now } : message
                   )),
             }
           : item);
@@ -757,7 +797,9 @@ export default function Home() {
       return [...current, {
         id: conversationId,
         title: value.length > 40 ? `${value.slice(0, 40)}...` : value,
-        messages: [{ role: "user", content: value, status: "sending" }],
+        createdAt: now,
+        updatedAt: now,
+        messages: [{ role: "user", content: value, status: "sending", timestamp: now }],
       }];
     });
 
@@ -769,16 +811,18 @@ export default function Home() {
       });
       if (!response.ok) throw new Error("Request failed");
       const payload = (await response.json()) as { answer: string; sources?: Source[] };
+      const assistantTimestamp = Date.now();
       setConversations((current) => current.map((item) => (
         item.id === conversationId ? {
           ...item,
+          updatedAt: assistantTimestamp,
           messages: [
             ...item.messages.map((message, index) => (
               index === (retryMessageIndex ?? item.messages.length - 1)
                 ? { ...message, status: undefined }
                 : message
             )),
-            { role: "assistant", content: payload.answer, sources: payload.sources ?? [] },
+            { role: "assistant", content: payload.answer, sources: payload.sources ?? [], timestamp: assistantTimestamp },
           ],
         } : item
       )));
@@ -897,31 +941,44 @@ export default function Home() {
                   if (!activeConversation) return null;
                   return (
                     <div className="messages-stream">
-                      <div className="date-divider">
-                        <span>HỌC VỤ & QUY CHẾ UTC • HÔM NAY</span>
-                      </div>
-                      {activeConversation.messages.map((message, index) => message.role === "user" ? (
-                        <div className="user-message" key={`${activeConversation.id}-${index}`}>
-                          <div className="user-message-content">
-                            <p>{message.content}</p>
-                            {message.status === "failed" && (
-                              <div className="message-error" role="alert">
-                                <span>Không thể gửi câu hỏi. Vui lòng kiểm tra lại backend.</span>
-                                <button
-                                  type="button"
-                                  disabled={loading}
-                                  data-message-index={index}
-                                  onClick={retryQuestion}
-                                >
-                                  Thử lại
-                                </button>
+                      {activeConversation.messages.map((message, index) => {
+                        const prevMessage = index > 0 ? activeConversation.messages[index - 1] : undefined;
+                        const msgTimestamp = message.timestamp ?? activeConversation.createdAt;
+                        const prevTimestamp = prevMessage?.timestamp ?? activeConversation.createdAt;
+                        const showDateDivider = index === 0 || !isSameCalendarDay(msgTimestamp, prevTimestamp);
+
+                        return (
+                          <Fragment key={`${activeConversation.id}-${index}`}>
+                            {showDateDivider && (
+                              <div className="date-divider">
+                                <span>HỌC VỤ & QUY CHẾ UTC • {formatDateLabel(msgTimestamp)}</span>
                               </div>
                             )}
-                          </div>
-                        </div>
-                      ) : (
-                        <AssistantAnswer key={`${activeConversation.id}-${index}`} answer={message.content} sources={message.sources} />
-                      ))}
+                            {message.role === "user" ? (
+                              <div className="user-message">
+                                <div className="user-message-content">
+                                  <p>{message.content}</p>
+                                  {message.status === "failed" && (
+                                    <div className="message-error" role="alert">
+                                      <span>Không thể gửi câu hỏi. Vui lòng kiểm tra lại backend.</span>
+                                      <button
+                                        type="button"
+                                        disabled={loading}
+                                        data-message-index={index}
+                                        onClick={retryQuestion}
+                                      >
+                                        Thử lại
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            ) : (
+                              <AssistantAnswer answer={message.content} sources={message.sources} />
+                            )}
+                          </Fragment>
+                        );
+                      })}
                       {loading && (
                         <div className="loading-message-card">
                           <div className="loading-pulse-dot" />
