@@ -9,8 +9,8 @@ const beVietnamPro = Be_Vietnam_Pro({
 });
 
 export const metadata: Metadata = {
-  title: "UniGuide AI — Trợ lý sinh viên UTC",
-  description: "Tra cứu quy chế, học vụ và quyền lợi sinh viên UTC.",
+  title: "UTC Assistant — Trợ lý sinh viên ĐH Giao thông Vận tải",
+  description: "Tra cứu quy chế đào tạo tín chỉ, học bổng, điểm rèn luyện và học vụ Sổ tay K67 UTC.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
