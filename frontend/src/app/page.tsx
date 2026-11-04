@@ -3,8 +3,8 @@
 import { FormEvent, Fragment, MouseEvent as ReactMouseEvent, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 
-const APP_NAME = "UTC Assistant";
-const LOGO_SRC = "/utc.png";
+const APP_NAME = "Unimate";
+const LOGO_SRC = "/logo.png";
 
 const ICONS = {
   bookCard: "/icons/book-card.svg",
@@ -185,6 +185,7 @@ function Sidebar({
   collapsed,
   conversations,
   activeConversationId,
+  backendStatus,
   onNewChat,
   onSelectConversation,
   onDeleteConversation,
@@ -194,6 +195,7 @@ function Sidebar({
   collapsed: boolean;
   conversations: Conversation[];
   activeConversationId: string | null;
+  backendStatus: "checking" | "online" | "offline";
   onNewChat: () => void;
   onSelectConversation: (id: string) => void;
   onDeleteConversation: (id: string) => void;
@@ -274,11 +276,15 @@ function Sidebar({
         </nav>
 
         <div className="sidebar-footer">
-          <div className="utc-status-card">
+          <div className={`utc-status-card is-${backendStatus}`}>
             <div className="utc-badge-pulse" />
             <div className="utc-status-copy">
               <strong>Sổ tay Sinh viên K67</strong>
-              <span>Đại học Giao thông Vận tải</span>
+              <span>
+                {backendStatus === "online" && "Đại học Giao thông Vận tải • Online"}
+                {backendStatus === "offline" && "Chưa kết nối Backend (Offline)"}
+                {backendStatus === "checking" && "Đang kiểm tra kết nối..."}
+              </span>
             </div>
           </div>
         </div>
@@ -399,6 +405,7 @@ function Topbar({
   sourcePanelOpen,
   onToggleSourcePanel,
   sourceCount,
+  backendStatus,
 }: {
   onOpenMenu: () => void;
   onNewChat: () => void;
@@ -409,6 +416,7 @@ function Topbar({
   sourcePanelOpen: boolean;
   onToggleSourcePanel: () => void;
   sourceCount: number;
+  backendStatus: "checking" | "online" | "offline";
 }) {
   return (
     <header className="topbar">
@@ -458,9 +466,22 @@ function Topbar({
 
       <div className="topbar-spacer" />
 
-      <div className="scope-pill">
+      <div
+        className={`scope-pill is-${backendStatus}`}
+        title={
+          backendStatus === "online"
+            ? "Đã kết nối với máy chủ AI Backend"
+            : backendStatus === "offline"
+              ? "Chưa kết nối được với máy chủ AI Backend"
+              : "Đang kiểm tra kết nối Backend..."
+        }
+      >
         <span className="scope-dot" />
-        <span>Sổ tay K67 Online</span>
+        <span>
+          {backendStatus === "online" && "Sổ tay K67 Online"}
+          {backendStatus === "offline" && "Mất kết nối Backend"}
+          {backendStatus === "checking" && "Đang kết nối..."}
+        </span>
       </div>
 
       {/* Button to toggle right Source Panel */}
@@ -499,7 +520,7 @@ function AssistantAnswer({ answer, sources = [] }: { answer: string; sources?: S
       <div className="assistant-avatar">
         <Image
           src={LOGO_SRC}
-          alt="UTC Assistant"
+          alt={APP_NAME}
           width={26}
           height={26}
           className="utc-avatar-img"
@@ -686,8 +707,33 @@ export default function Home() {
   const [storageReady, setStorageReady] = useState(false);
   const [loading, setLoading] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [backendStatus, setBackendStatus] = useState<"checking" | "online" | "offline">("checking");
   const requestId = useRef(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let active = true;
+
+    async function checkHealth() {
+      try {
+        const res = await fetch("/api/health", { cache: "no-store" });
+        if (active) {
+          setBackendStatus(res.ok ? "online" : "offline");
+        }
+      } catch {
+        if (active) {
+          setBackendStatus("offline");
+        }
+      }
+    }
+
+    void checkHealth();
+    const interval = setInterval(checkHealth, 10000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -810,6 +856,7 @@ export default function Home() {
         body: JSON.stringify({ question: value, history }),
       });
       if (!response.ok) throw new Error("Request failed");
+      setBackendStatus("online");
       const payload = (await response.json()) as { answer: string; sources?: Source[] };
       const assistantTimestamp = Date.now();
       setConversations((current) => current.map((item) => (
@@ -827,6 +874,7 @@ export default function Home() {
         } : item
       )));
     } catch {
+      setBackendStatus("offline");
       setConversations((current) => current.map((item) => (
         item.id === conversationId ? {
           ...item,
@@ -875,6 +923,7 @@ export default function Home() {
         collapsed={sidebarCollapsed}
         conversations={conversations}
         activeConversationId={activeConversationId}
+        backendStatus={backendStatus}
         onNewChat={startNewChat}
         onSelectConversation={selectConversation}
         onDeleteConversation={deleteConversation}
@@ -892,6 +941,7 @@ export default function Home() {
           sourcePanelOpen={sourcePanelOpen}
           onToggleSourcePanel={() => setSourcePanelOpen((prev) => !prev)}
           sourceCount={activeSources.length}
+          backendStatus={backendStatus}
         />
 
         <div className="workspace">

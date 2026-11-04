@@ -58,7 +58,7 @@ GROUNDED_ANSWER_SCHEMA = {
     "required": ["claims"],
     "additionalProperties": False,
 }
-SYSTEM_PROMPT = """Bạn là UniGuide AI, trợ lý sinh viên UTC.
+SYSTEM_PROMPT = """Bạn là Unimate, trợ lý sinh viên UTC.
 
 Nhiệm vụ:
 - Trả lời thẳng câu hỏi bằng tiếng Việt, ngắn gọn, tự nhiên; không nhắc đến

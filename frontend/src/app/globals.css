@@ -199,7 +199,7 @@ button {
   flex-direction: column;
   width: 270px;
   height: 100%;
-  padding: 20px 16px 24px;
+  padding: 16px 14px 10px; /* Đẩy sát kịch xuống đáy, không bị lơ lửng */
   overflow: hidden;
   background: var(--sidebar-bg);
   border-right: 1px solid var(--sidebar-border);
@@ -242,6 +242,7 @@ button {
   height: 38px;
   flex: 0 0 38px;
   border-radius: 9px;
+  overflow: hidden;
   background: transparent !important;
   border: none !important;
   box-shadow: none !important;
@@ -251,7 +252,8 @@ button {
 .utc-logo-img {
   width: 100%;
   height: 100%;
-  object-fit: contain;
+  object-fit: cover;
+  border-radius: inherit;
   display: block;
 }
 
@@ -458,11 +460,11 @@ button {
   filter: invert(34%) sepia(87%) saturate(2250%) hue-rotate(338deg) brightness(97%) contrast(93%);
 }
 
-/* Sidebar Footer (Safe margin from dev indicators) */
+/* Sidebar Footer: Đẩy sát kịch xuống đáy thanh bên */
 .sidebar-footer {
   margin-top: auto;
-  padding-top: 12px;
-  padding-bottom: 32px; /* Khoảng trống an toàn tránh bị icon dev indicator che */
+  padding-top: 8px;
+  padding-bottom: 0;
   border-top: 1px solid var(--sidebar-border);
 }
 
@@ -474,6 +476,22 @@ button {
   border-radius: var(--radius-md);
   background: var(--sidebar-card-bg);
   border: 1px solid var(--sidebar-border);
+  transition: all 0.2s ease;
+}
+
+.utc-status-card.is-online {
+  border-color: rgba(16, 185, 129, 0.3);
+  background: rgba(16, 185, 129, 0.05);
+}
+
+.utc-status-card.is-offline {
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.06);
+}
+
+.utc-status-card.is-checking {
+  border-color: rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.05);
 }
 
 .utc-badge-pulse {
@@ -483,6 +501,28 @@ button {
   background: var(--utc-green-light);
   box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.25);
   animation: pulseGreen 2.4s infinite ease-in-out;
+}
+
+.utc-status-card.is-offline .utc-badge-pulse {
+  background: #ef4444;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.25);
+  animation: pulseRed 2.4s infinite ease-in-out;
+}
+
+.utc-status-card.is-checking .utc-badge-pulse {
+  background: #f59e0b;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.25);
+  animation: pulseAmber 2.4s infinite ease-in-out;
+}
+
+@keyframes pulseRed {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.25); }
+  50% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0.1); }
+}
+
+@keyframes pulseAmber {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.25); }
+  50% { box-shadow: 0 0 0 6px rgba(245, 158, 11, 0.1); }
 }
 
 @keyframes pulseGreen {
@@ -628,19 +668,49 @@ button {
   padding: 0 10px;
   gap: 6px;
   border-radius: var(--radius-full);
+  font-size: 10px;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.scope-pill.is-online {
   background: var(--utc-green-soft);
   border: 1px solid var(--utc-green-border);
   color: var(--utc-green);
-  font-size: 10px;
-  font-weight: 600;
+}
+
+.scope-pill.is-online .scope-dot {
+  background: var(--utc-green-light);
+  box-shadow: 0 0 5px var(--utc-green-light);
+}
+
+.scope-pill.is-offline {
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #dc2626;
+}
+
+.scope-pill.is-offline .scope-dot {
+  background: #ef4444;
+  box-shadow: 0 0 5px #ef4444;
+}
+
+.scope-pill.is-checking {
+  background: var(--utc-amber-soft);
+  border: 1px solid var(--utc-amber-border);
+  color: var(--utc-amber);
+}
+
+.scope-pill.is-checking .scope-dot {
+  background: var(--utc-amber-light);
+  box-shadow: 0 0 5px var(--utc-amber-light);
 }
 
 .scope-dot {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: var(--utc-green-light);
-  box-shadow: 0 0 5px var(--utc-green-light);
+  flex: 0 0 6px;
 }
 
 /* Theme Toggle Button */
@@ -1055,8 +1125,9 @@ button {
   height: 34px;
   flex: 0 0 34px;
   border-radius: 9px;
+  overflow: hidden;
   background: #ffffff;
-  padding: 2px;
+  padding: 1px;
   border: 1.5px solid var(--utc-amber-light);
   box-shadow: 0 3px 10px rgba(15, 23, 42, 0.1);
 }
@@ -1064,7 +1135,8 @@ button {
 .utc-avatar-img {
   width: 100%;
   height: 100%;
-  object-fit: contain;
+  object-fit: cover;
+  border-radius: 7px;
   display: block;
 }
 
@@ -1463,8 +1535,9 @@ button {
   width: 34px;
   height: 34px;
   border-radius: 8px;
+  overflow: hidden;
   background: transparent;
-  padding: 2px;
+  padding: 0;
 }
 
 .document-copy {
