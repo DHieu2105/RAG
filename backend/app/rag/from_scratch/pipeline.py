@@ -14,6 +14,7 @@ from .embeddings import TfidfVectorizer
 from .grounding import (
     AnswerCoverageError,
     CitationValidationError,
+    _merge_same_scope_fragments,
     context_is_relevant,
     coverage_requirements,
     extract_coverage_units,
@@ -32,6 +33,7 @@ from .query_processing import (
 from .query_understanding import QueryAnalysis, analyze_query, lexical_terms
 from .reranker import rerank_results
 from .retriever import reciprocal_rank_fusion, top_k_search
+from .tokenizer import tokenize
 
 
 DEFAULT_TOP_K = 5
@@ -275,17 +277,32 @@ def retrieve_for_chat(
     document_vectors: list[list[float]],
     bm25_index: BM25Index | None = None,
     retrieval_mode: str = HYBRID_RETRIEVAL_MODE,
+    top_k: int = DEFAULT_TOP_K,
 ) -> list[dict]:
-    """Retrieve chat context with Hybrid or the rollback TF-IDF mode."""
-    analysis = analyze_query(question)
-    chat_top_k = CHAT_TOP_K if analysis.requires_complete_coverage else DEFAULT_TOP_K
+    """Retrieve chat context using the chosen retrieval mode."""
     if retrieval_mode == LEGACY_RETRIEVAL_MODE:
         results = ask_with_query_processing(
             question,
             chunks,
             vectorizer,
             document_vectors,
-            top_k=chat_top_k,
+            top_k=top_k,
+        )
+    elif retrieval_mode == "tfidf":
+        results = ask(
+            question,
+            chunks,
+            vectorizer,
+            document_vectors,
+            top_k=top_k,
+        )
+    elif retrieval_mode == "bm25":
+        active_bm25_index = bm25_index or build_bm25_index(chunks)
+        results = ask_bm25(
+            question,
+            chunks,
+            active_bm25_index,
+            top_k=top_k,
         )
     elif retrieval_mode != HYBRID_RETRIEVAL_MODE:
         supported = ", ".join(sorted(SUPPORTED_RETRIEVAL_MODES))
@@ -301,8 +318,12 @@ def retrieve_for_chat(
             vectorizer,
             document_vectors,
             active_bm25_index,
-            top_k=chat_top_k,
+            top_k=top_k,
         )
+
+    for result in results:
+        if "_context_complete" not in result:
+            result["_context_complete"] = True
 
     if DEBUG_RAG:
         print("\n========== RAW RETRIEVAL ==========")
@@ -316,8 +337,7 @@ def retrieve_for_chat(
             )
         print("========== END RAW RETRIEVAL ==========\n")
 
-    results = _add_title_matches(analysis, results, chunks)
-    return _expand_same_article_context(question, results, chunks)
+    return results
 
 
 def _retrieval_identity(chunk: dict) -> tuple[object, ...]:
@@ -386,6 +406,105 @@ def _expand_same_article_context(
     )
 
 
+def _prepare_chat_context(
+    results: list[dict],
+    all_chunks: list[dict],
+) -> list[dict]:
+    """Reassemble split consecutive fragments of the same clause into continuous text."""
+    if not results or not all_chunks:
+        return results
+
+    expanded: list[dict] = []
+    seen: set[tuple[object, ...]] = set()
+
+    def chunk_id(c: dict) -> tuple[object, ...]:
+        return (
+            c.get("part"),
+            c.get("chapter"),
+            c.get("article"),
+            tuple(c.get("clauses") or []),
+            c.get("page_start"),
+            c.get("page_end"),
+            c.get("text"),
+        )
+
+    chunk_to_index = {chunk_id(c): idx for idx, c in enumerate(all_chunks)}
+
+    for r in results:
+        cid = chunk_id(r)
+        if cid not in seen:
+            seen.add(cid)
+            expanded.append(r)
+
+        idx = chunk_to_index.get(cid)
+        if idx is not None:
+            for adj_idx in (idx - 1, idx + 1):
+                if 0 <= adj_idx < len(all_chunks):
+                    adj_c = all_chunks[adj_idx]
+                    if (
+                        adj_c.get("part") == r.get("part")
+                        and adj_c.get("chapter") == r.get("chapter")
+                        and adj_c.get("article") == r.get("article")
+                        and adj_c.get("clauses") == r.get("clauses")
+                        and adj_c.get("clauses")
+                    ):
+                        adj_cid = chunk_id(adj_c)
+                        if adj_cid not in seen:
+                            seen.add(adj_cid)
+                            expanded.append(adj_c)
+
+    return _merge_same_scope_fragments(expanded)
+
+
+def _filter_supporting_sources(results: list[dict], answer: str) -> list[dict]:
+    """Filter candidate chunks to only those whose content actually supports the answer."""
+    if not results or not answer:
+        return []
+
+    refusal_phrases = (
+        "không tìm thấy thông tin liên quan",
+        "không có thông tin liên quan",
+        "không tìm thấy tài liệu liên quan",
+        "tài liệu được cung cấp chưa đủ thông tin để trả lời chắc chắn",
+    )
+    if any(phrase in answer.lower() for phrase in refusal_phrases):
+        return []
+
+    stopwords = {
+        "sinh", "viên", "học", "nhà", "trường", "được", "các", "cho", "của", "trong",
+        "theo", "và", "hoặc", "có", "phải", "tại", "với", "về", "sau", "đây", "để",
+        "trên", "khi", "nếu", "thì", "một", "những", "người", "quy", "định", "phần",
+        "điều", "khoản", "trang", "sổ", "tay", "utc", "k67", "vay", "vốn",
+    }
+    ans_tokens = set(tokenize(answer)) - stopwords
+    answer_lower = answer.lower()
+
+    supported: list[dict] = []
+    for chunk in results:
+        c_text = str(chunk.get("text", "")).lower()
+        c_tokens = set(tokenize(c_text)) - stopwords
+        overlap = ans_tokens & c_tokens
+
+        # Check if 3-word phrase from answer appears in chunk text
+        phrase_found = False
+        words = [w for w in tokenize(answer) if w not in stopwords and len(w) > 1]
+        for i in range(len(words) - 2):
+            shingle = " ".join(words[i:i + 3])
+            if shingle in c_text:
+                phrase_found = True
+                break
+
+        # Check if clause is explicitly referenced in answer
+        clauses = chunk.get("clauses") or []
+        clause_ref = any(f"khoản {cl}" in answer_lower for cl in clauses)
+
+        if phrase_found or clause_ref or len(overlap) >= 15:
+            supported.append(chunk)
+
+    final_chunks = supported if supported else results
+    return _select_sources(final_chunks)
+
+
 def chat_with_sources(
     question: str,
     chunks: list[dict],
@@ -394,9 +513,15 @@ def chat_with_sources(
     history: list[dict[str, str]] | None = None,
     bm25_index: BM25Index | None = None,
     retrieval_mode: str = HYBRID_RETRIEVAL_MODE,
+    top_k: int = DEFAULT_TOP_K,
 ) -> dict:
-    """Return an answer together with the retrieved source metadata."""
-    analysis = analyze_query(question)
+    """Simplified 5-step RAG workflow:
+    1. User enters query.
+    2. Retriever finds relevant chunks from index.
+    3. Context Builder augments chunks into prompt.
+    4. LLM receives prompt and generates grounded answer.
+    5. Return answer together with source citations.
+    """
     results = retrieve_for_chat(
         question,
         chunks,
@@ -404,10 +529,20 @@ def chat_with_sources(
         document_vectors,
         bm25_index=bm25_index,
         retrieval_mode=retrieval_mode,
+        top_k=top_k,
     )
+
+    if not results:
+        return {"answer": NO_RELEVANT_DOCUMENT_ANSWER, "sources": []}
+
+    if any(not result.get("_context_complete", True) for result in results):
+        return {"answer": INCOMPLETE_CONTEXT_ANSWER, "sources": []}
+
+    context_chunks = _prepare_chat_context(results, chunks)
+
     if DEBUG_RAG:
-        print("\n========== DEBUG RETRIEVAL ==========")
-        for index, chunk in enumerate(results, start=1):
+        print("\n========== DEBUG CONTEXT CHUNKS ==========")
+        for index, chunk in enumerate(context_chunks, start=1):
             print(
                 f"\n[Tài liệu {index}] "
                 f"Phần {chunk.get('part')} | "
@@ -416,89 +551,25 @@ def chat_with_sources(
                 f"Trang {chunk.get('page_start')}-{chunk.get('page_end')}"
             )
             print(chunk.get("text", ""))
-        print("\n========== END DEBUG RETRIEVAL ==========\n")
-    known_terms = getattr(vectorizer, "vocabulary", None)
-    if isinstance(known_terms, dict):
-        known_terms = set(known_terms)
+        print("\n========== END DEBUG CONTEXT CHUNKS ==========\n")
+
+    context = build_context(context_chunks)
+    answer = generate_answer(question, context, history=history)
+
+    refusal_phrases = (
+        "không tìm thấy thông tin liên quan",
+        "không có thông tin liên quan",
+        "không tìm thấy tài liệu liên quan",
+        "tài liệu được cung cấp chưa đủ thông tin để trả lời chắc chắn",
+    )
+    is_refusal = any(phrase in answer.lower() for phrase in refusal_phrases)
+
+    if is_refusal:
+        sources = []
     else:
-        known_terms = None
-    if not context_is_relevant(analysis, results, known_terms=known_terms):
-        return {"answer": NO_RELEVANT_DOCUMENT_ANSWER, "sources": []}
-    if any(not result.get("_context_complete", True) for result in results):
-        return {"answer": INCOMPLETE_CONTEXT_ANSWER, "sources": []}
+        sources = _filter_supporting_sources(context_chunks, answer)
 
-    context = build_context(results)
-    answer_requirements = generate_answer_requirements(question)
-    coverage_units = extract_coverage_units(analysis, results)
-    answer_requirements.extend(coverage_requirements(coverage_units))
-    validation_error: ValueError | None = None
-    final_failure = "generation"
-
-    for attempt in range(MAX_GENERATION_ATTEMPTS):
-        grounded = None
-        attempt_requirements = list(answer_requirements)
-        if validation_error is not None:
-            attempt_requirements.append(
-                "Bản trả lời trước không đạt kiểm tra: "
-                f"{validation_error}. Hãy sửa đúng lỗi này và tạo lại toàn bộ "
-                "câu trả lời từ tài liệu tham khảo."
-            )
-
-        try:
-            grounded = generate_grounded_answer(
-                question,
-                context,
-                history,
-                answer_requirements=attempt_requirements,
-            )
-            _normalize_citation_metadata(results, grounded.get("citations", []))
-            if not grounded.get("citations"):
-                raise AnswerCoverageError(
-                    "Model không tạo được claim có citation từ context"
-                )
-            _validate_claim_coverage(
-                grounded["answer"], grounded["citations"]
-            )
-            sources = _select_cited_sources(results, grounded["citations"])
-            validate_claim_faithfulness(
-                analysis,
-                results,
-                grounded["citations"],
-            )
-            validate_answer_style(analysis, grounded["citations"])
-            validate_answer_coverage(coverage_units, grounded["citations"])
-        except AnswerCoverageError as error:
-            if DEBUG_RAG:
-                print(
-                    f"[DEBUG][ATTEMPT {attempt + 1}] "
-                    f"AnswerCoverageError: {error}"
-                )
-            validation_error = error
-            final_failure = "generation"
-            if attempt + 1 == MAX_GENERATION_ATTEMPTS:
-                return {"answer": INCOMPLETE_GENERATION_ANSWER, "sources": []}
-            continue
-        except (CitationValidationError, ValueError) as error:
-            if DEBUG_RAG:
-                print(
-                    f"[DEBUG][ATTEMPT {attempt + 1}] "
-                    f"{type(error).__name__}: {error}"
-                )
-                if grounded is not None:
-                    print("[DEBUG] ANSWER:", grounded.get("answer"))
-                    for citation in grounded.get("citations", []):
-                        print("[DEBUG] CITATION:", citation)
-            validation_error = error
-            final_failure = "citation"
-            if attempt + 1 == MAX_GENERATION_ATTEMPTS:
-                return {"answer": INVALID_CITATION_ANSWER, "sources": []}
-            continue
-
-        return {"answer": grounded["answer"], "sources": sources}
-
-    if final_failure == "citation":
-        return {"answer": INVALID_CITATION_ANSWER, "sources": []}
-    return {"answer": INCOMPLETE_GENERATION_ANSWER, "sources": []}
+    return {"answer": answer, "sources": sources}
 
 
 def _normalized_text(value: str) -> str:

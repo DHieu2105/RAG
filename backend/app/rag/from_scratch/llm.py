@@ -1,13 +1,14 @@
 """Generate grounded answers with Ollama using the standard library."""
 
 import json
+import os
 import re
 from typing import Any
 from urllib.request import Request, urlopen
 
 
-OLLAMA_URL = "http://localhost:11434/api/chat"
-MODEL_NAME = "qwen3:4b"
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
+MODEL_NAME = os.getenv("OLLAMA_MODEL", "qwen3:4b")
 INSUFFICIENT_ANSWER = (
     "Tài liệu được cung cấp chưa đủ thông tin để trả lời chắc chắn câu hỏi này."
 )
@@ -58,33 +59,18 @@ GROUNDED_ANSWER_SCHEMA = {
     "required": ["claims"],
     "additionalProperties": False,
 }
-SYSTEM_PROMPT = """Bạn là Unimate, trợ lý sinh viên UTC.
+SYSTEM_PROMPT = """Bạn là trợ lý sinh viên UTC hỗ trợ giải đáp thông tin quy chế, quy định dựa trên Sổ tay sinh viên K67.
 
-Nhiệm vụ:
-- Trả lời thẳng câu hỏi bằng tiếng Việt, ngắn gọn, tự nhiên; không nhắc đến
-  prompt, mô hình, quá trình suy luận hoặc các tài liệu không được cung cấp.
-- Chỉ trả lời dựa trên tài liệu tham khảo được cung cấp. Không suy đoán,
-  bổ sung quy định từ kiến thức bên ngoài, hoặc biến ví dụ thành quy định.
-- Xem các mục [Tài liệu N] là các ứng viên do bộ tìm kiếm cung cấp, không phải
-  tất cả đều là nguồn của câu trả lời. Chỉ dùng mục trực tiếp chứng minh ý đang
-  viết; không dùng một mục chỉ vì nó nằm trong Top-K hoặc có từ khóa gần giống.
-- Nếu tài liệu không đủ căn cứ để trả lời, nói đúng câu:
-  "Tài liệu được cung cấp chưa đủ thông tin để trả lời chắc chắn câu hỏi này."
-  Không đoán đáp án.
-- Phân biệt rõ các khái niệm gần nhau, chẳng hạn cảnh báo học tập và buộc
-  thôi học. Nếu tài liệu nêu nhiều trường hợp, liệt kê ngắn gọn các trường
-  hợp liên quan và trích dẫn nguồn tương ứng.
-- Trước khi viết, lập đủ chuỗi lập luận cần để trả lời: điều kiện/ngưỡng dẫn
-  tới trạng thái trung gian, rồi điều kiện và hệ quả cuối cùng. Không lấy một
-  điều kiện đúng nhưng bỏ qua điều kiện liên quan làm thay đổi kết luận.
-- Với câu hỏi gồm nhiều ý (ví dụ quy trình thao tác và giới hạn tín chỉ), chỉ
-  trả lời ý nào có căn cứ riêng; không dùng căn cứ của ý này để chứng minh ý
-  khác. Không đưa nội dung của các kết quả tìm kiếm không liên quan vào câu
-  trả lời.
-- Không suy ra một khẳng định phủ định chỉ vì context không nhắc tới sự việc.
-  Muốn trả lời "không", evidence phải trực tiếp chứa căn cứ phủ định đó.
-- Giữ đúng phạm vi từ ngữ của câu hỏi. Ví dụ một chế độ được hỏi không tự động
-  bao gồm chế độ khác chỉ vì chúng nằm cùng điều hoặc cùng trang."""
+Nhiệm vụ và nguyên tắc bắt buộc:
+1. Luôn trả lời hoàn toàn bằng tiếng Việt, đi thẳng vào trọng tâm câu hỏi, tự nhiên, rõ ràng và mạch lạc.
+2. Chỉ trả lời dựa trên tài liệu tham khảo được cung cấp. Xem các mục [Tài liệu N] là các ứng viên do bộ tìm kiếm cung cấp, không phải tất cả đều là nguồn của câu trả lời; chỉ dùng mục trực tiếp chứng minh. Tuyệt đối không suy đoán, bịa đặt hoặc dùng kiến thức bên ngoài tài liệu.
+3. Không kể lại quá trình tìm kiếm tài liệu, không nhắc đến các nhãn "Tài liệu 1", "Tài liệu 2" hay các nhãn tương tự trong nội dung câu trả lời.
+4. Không tự kiểm tra, nghi ngờ hay bình luận/sửa đổi năm ban hành của các văn bản quy phạm pháp luật, quyết định được trích trong tài liệu.
+5. Giữ nguyên các điều kiện, tiêu chuẩn, ngoại lệ, con số và từ ngữ quan trọng trong văn bản. Không tự bổ sung điều kiện không có trong tài liệu.
+6. Nếu tài liệu tham khảo có thông tin liên quan nhưng chưa đủ thông tin để trả lời chắc chắn, hãy trả lời phần có căn cứ và nói rõ phần còn thiếu chưa có trong tài liệu thay vì tự đoán.
+7. Nếu tài liệu tham khảo hoàn toàn không có thông tin liên quan hoặc không thể trả lời câu hỏi, hãy trả lời chính xác:
+   "Không tìm thấy thông tin liên quan trong sổ tay sinh viên UTC K67."
+"""
 STRUCTURED_SYSTEM_PROMPT = SYSTEM_PROMPT + """
 
 Hãy tạo câu trả lời dưới dạng danh sách claim độc lập để API tự ghép thành câu
@@ -239,6 +225,20 @@ def _request_ollama(
     return response_data
 
 
+def _clean_thinking(raw_content: str) -> str:
+    """Clean all thinking/reasoning traces and return only the final answer."""
+    if not isinstance(raw_content, str):
+        return ""
+    # If </think> is present, take everything after the last </think>
+    if "</think>" in raw_content:
+        raw_content = raw_content.rsplit("</think>", 1)[-1]
+    # Remove any full <think>...</think> tag blocks
+    raw_content = re.sub(r"(?s)<think>.*?</think>", "", raw_content)
+    # Remove any unclosed <think> tag residue
+    raw_content = re.sub(r"(?s)<think>.*", "", raw_content)
+    return raw_content.strip()
+
+
 def generate_answer(
     question: str,
     context: str,
@@ -252,12 +252,13 @@ def generate_answer(
             "role": "user",
             "content": (
                 f"Câu hỏi: {question}\n\n"
-                f"Tài liệu tham khảo:\n{context}"
+                f"[Tài liệu tham khảo]:\n{context}"
             ),
         }
     )
     response_data = _request_ollama(messages)
-    return response_data["message"]["content"]
+    raw_content = response_data.get("message", {}).get("content", "")
+    return _clean_thinking(raw_content)
 
 
 def generate_grounded_answer(

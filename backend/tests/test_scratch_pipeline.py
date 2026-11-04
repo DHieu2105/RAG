@@ -337,51 +337,16 @@ def test_coverage_rejects_evidence_bound_to_wrong_document() -> None:
     raise AssertionError("Expected ValueError to be raised")
 
 
-def test_chat_retries_once_when_tuition_answer_is_incomplete() -> None:
-    results = [
-        {
-            **_tuition_results()[0],
-            "text": (
-                "1. Đối tượng được miễn học phí gồm: "
-                "a. Sinh viên nhóm Alpha. b. Sinh viên nhóm Beta."
-            ),
-        }
-    ]
-    incomplete = {
-        "answer": "Sinh viên nhóm Alpha được miễn học phí.",
-        "citations": [
-            {
-                "claim": "Sinh viên nhóm Alpha được miễn học phí.",
-                "document": 1,
-                "clauses": [1],
-                "evidence": "a. Sinh viên nhóm Alpha.",
-            }
-        ],
-    }
-    complete_citations = [
-        *incomplete["citations"],
-        {
-            "claim": "Sinh viên nhóm Beta được miễn học phí.",
-            "document": 1,
-            "clauses": [1],
-            "evidence": "b. Sinh viên nhóm Beta.",
-        },
-    ]
-    complete = {
-        "answer": "\n\n".join(
-            citation["claim"] for citation in complete_citations
-        ),
-        "citations": complete_citations,
-    }
-
+def test_chat_with_sources_generates_answer_and_returns_sources() -> None:
+    results = _tuition_results()
     with (
         patch(
             "app.rag.from_scratch.pipeline.retrieve_for_chat",
             return_value=results,
         ),
         patch(
-            "app.rag.from_scratch.pipeline.generate_grounded_answer",
-            side_effect=[incomplete, complete],
+            "app.rag.from_scratch.pipeline.generate_answer",
+            return_value="Sinh viên thuộc đối tượng chính sách được miễn giảm học phí.",
         ) as mocked_generate,
     ):
         response = chat_with_sources(
@@ -391,58 +356,37 @@ def test_chat_retries_once_when_tuition_answer_is_incomplete() -> None:
             [],
         )
 
-    assert response["answer"] == complete["answer"]
-    assert mocked_generate.call_count == 2
-    retry_requirements = mocked_generate.call_args.kwargs[
-        "answer_requirements"
-    ]
-    assert any(
-        "Bản trả lời trước không đạt kiểm tra" in item
-        for item in retry_requirements
+    assert (
+        response["answer"]
+        == "Sinh viên thuộc đối tượng chính sách được miễn giảm học phí."
     )
+    assert len(response["sources"]) == 2
+    assert response["sources"][0]["article"] == 3
+    assert response["sources"][1]["article"] == 4
+    mocked_generate.assert_called_once()
 
 
-def test_chat_returns_insufficient_answer_after_two_invalid_attempts() -> None:
-    results = [
-        {
-            **_tuition_results()[0],
-            "text": (
-                "1. Đối tượng được miễn học phí gồm: "
-                "a. Sinh viên nhóm Alpha. b. Sinh viên nhóm Beta."
-            ),
-        }
-    ]
-    incomplete = {
-        "answer": "Sinh viên nhóm Alpha được miễn học phí.",
-        "citations": [
-            {
-                "claim": "Sinh viên nhóm Alpha được miễn học phí.",
-                "document": 1,
-                "clauses": [1],
-                "evidence": "a. Sinh viên nhóm Alpha.",
-            }
-        ],
-    }
-
+def test_chat_with_sources_refusal_returns_empty_sources() -> None:
+    results = _tuition_results()
     with (
         patch(
             "app.rag.from_scratch.pipeline.retrieve_for_chat",
             return_value=results,
         ),
         patch(
-            "app.rag.from_scratch.pipeline.generate_grounded_answer",
-            side_effect=[incomplete, incomplete],
+            "app.rag.from_scratch.pipeline.generate_answer",
+            return_value="Không tìm thấy thông tin liên quan trong sổ tay sinh viên UTC K67.",
         ),
     ):
         response = chat_with_sources(
-            "Đối tượng nào được miễn, giảm học phí?",
+            "Thời tiết Hà Nội hôm nay thế nào?",
             results,
             object(),
             [],
         )
 
     assert response == {
-        "answer": "Đã tìm thấy căn cứ liên quan nhưng câu trả lời sinh ra chưa bao phủ đầy đủ thông tin.",
+        "answer": "Không tìm thấy thông tin liên quan trong sổ tay sinh viên UTC K67.",
         "sources": [],
     }
 
@@ -462,7 +406,7 @@ def test_chat_distinguishes_incomplete_retrieval_context() -> None:
             return_value=results,
         ),
         patch(
-            "app.rag.from_scratch.pipeline.generate_grounded_answer"
+            "app.rag.from_scratch.pipeline.generate_answer"
         ) as mocked_generate,
     ):
         response = chat_with_sources(
@@ -476,43 +420,22 @@ def test_chat_distinguishes_incomplete_retrieval_context() -> None:
     mocked_generate.assert_not_called()
 
 
-def test_chat_distinguishes_invalid_citation_from_missing_context() -> None:
-    results = [
-        {
-            "article": 8,
-            "clauses": [1],
-            "text": "Mức Alpha là 12 đơn vị.",
-        }
-    ]
-    invalid = {
-        "answer": "Mức Alpha là 12 đơn vị.",
-        "citations": [
-            {
-                "claim": "Mức Alpha là 12 đơn vị.",
-                "document": 1,
-                "clauses": [1],
-                "evidence": "Đoạn không tồn tại.",
-            }
-        ],
-    }
-    with (
-        patch(
-            "app.rag.from_scratch.pipeline.retrieve_for_chat",
-            return_value=results,
-        ),
-        patch(
-            "app.rag.from_scratch.pipeline.generate_grounded_answer",
-            side_effect=[invalid, invalid],
-        ),
+def test_chat_returns_no_relevant_document_when_retrieval_is_empty() -> None:
+    with patch(
+        "app.rag.from_scratch.pipeline.retrieve_for_chat",
+        return_value=[],
     ):
         response = chat_with_sources(
-            "Mức Alpha là gì?",
-            results,
+            "Câu hỏi bất kỳ?",
+            [],
             object(),
             [],
         )
 
-    assert response == {"answer": INVALID_CITATION_ANSWER, "sources": []}
+    assert response == {
+        "answer": "Không tìm thấy tài liệu liên quan trong sổ tay.",
+        "sources": [],
+    }
 
 
 def test_select_sources_limits_and_deduplicates_sources() -> None:
