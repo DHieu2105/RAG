@@ -1,199 +1,193 @@
-# UniGuide AI
+# UniGuide AI — Trợ Lý Tra Cứu Sổ Tay Sinh Viên (RAG)
 
-UniGuide AI là trợ lý hỏi đáp dành cho sinh viên, sử dụng kiến trúc Retrieval-Augmented Generation (RAG) để tìm kiếm thông tin trong sổ tay sinh viên và cung cấp câu trả lời có ngữ cảnh.
+UniGuide AI là trợ lý ảo hỏi đáp thông minh dành cho sinh viên, sử dụng kiến trúc **RAG (Retrieval-Augmented Generation)** kết hợp tìm kiếm đa tầng (**TF-IDF + BM25 + Vector Embedding**) và LLM local qua **Ollama**.
 
-## Tech Stack
+Hệ thống hỗ trợ tra cứu chính xác quy chế đào tạo tín chỉ, học bổng, điểm rèn luyện, chuẩn đầu ra... có trích dẫn rõ ràng (Điều, Khoản, số trang). Dự án được thiết kế linh hoạt, dễ dàng áp dụng cho sổ tay của bất kỳ trường nào.
 
-- **Frontend:** Next.js 16, React 19, TypeScript, Tailwind CSS 4
-- **Backend:** Python 3.12, FastAPI, Uvicorn
-- **Document processing:** PyMuPDF
-- **Data pipeline:** PDF loading, text preprocessing và chunking cho RAG
+---
 
-## Cấu Trúc Dự Án
+## 📋 Yêu Cầu Cần Chuẩn Bị
 
-```text
-RAG-simple/
-├── backend/
-│   ├── app/
-│   │   ├── main.py
-│   │   └── rag/
-│   └── requirements.txt
-├── data/
-│   ├── raw/
-│   └── processed/
-└── frontend/
+Cài đặt sẵn trên máy tính:
+
+1. **Python 3.12+**
+2. **Node.js 20+** & **npm**
+3. **[Ollama](https://ollama.com/)** (để chạy AI trên máy của bạn)
+
+---
+
+## 🚀 Hướng Dẫn Cài Đặt & Chạy Local Từ A Đến Z
+
+### Bước 1: Clone repo về máy
+
+```bash
+git clone <URL_REPO>
+cd RAG-simple
 ```
 
-Các file trong `data/raw` và `data/processed` không được đưa lên Git. Đặt tài liệu nguồn tại `data/raw/handbook_k67.pdf` trước khi chạy pipeline xử lý dữ liệu.
+---
 
-## Yêu Cầu
+### Bước 2: Bật mô hình AI với Ollama
 
-- Python 3.12+
-- Node.js 20+
-- npm
+1. Tải và cài đặt Ollama từ [ollama.com](https://ollama.com).
+2. Mở terminal bất kỳ và tải model về máy:
+   ```bash
+   ollama pull qwen3:4b
+   ```
 
-## Chạy Backend
+   *(Nếu máy cấu hình vừa phải, bạn có thể dùng `ollama pull qwen2.5:3b`)*.
+
+---
+
+### Bước 3: Đặt tài liệu Sổ tay & Logo trường
+
+1. Đặt file PDF sổ tay sinh viên vào thư mục `data/raw/` (hệ thống sẽ tự động quét và nhận file `.pdf` bất kỳ).
+2. *(Tùy chọn)* Đặt file logo trường vào `frontend/public/logo.png`.
+
+---
+
+### Bước 4: Thiết lập Backend
+
+1. Mở terminal tại thư mục `backend`:
+
+   ```bash
+   cd backend
+   ```
+2. Tạo và kích hoạt môi trường ảo:
+
+   - **Windows (PowerShell):**
+     ```powershell
+     python -m venv .venv
+     .\.venv\Scripts\Activate.ps1
+     ```
+   - **macOS / Linux:**
+     ```bash
+     python -m venv .venv
+     source .venv/bin/activate
+     ```
+3. Cài đặt các thư viện cần thiết:
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+4. Tạo file cấu hình `backend/.env`:
+
+   - Copy từ file `.env.example`:
+     - Windows: `copy .env.example .env`
+     - macOS/Linux: `cp .env.example .env`
+   - File `backend/.env` chạy local cơ bản:
+     ```dotenv
+     UNIGUIDE_API_TOKEN=uniguide-secret-local-token
+     UNIGUIDE_CORS_ORIGINS=http://localhost:3000
+     UNIGUIDE_RETRIEVAL_MODE=hybrid
+     OLLAMA_URL=http://127.0.0.1:11434/api/chat
+     OLLAMA_MODEL=qwen3:4b
+     ```
+
+---
+
+### Bước 5: Xử lý dữ liệu Sổ tay (Chạy 1 lần đầu)
+
+Đảm bảo terminal đang ở thư mục `backend` và đã kích hoạt môi trường ảo (`.venv`):
+
+1. **Cắt đoạn văn bản (Preprocessing):**
+
+   ```bash
+   python -m app.rag.preprocessing
+   ```
+2. **Tạo Vector Embeddings (mô hình BAAI/bge-m3):**
+
+   ```bash
+   python -m app.rag.embeddings
+   ```
+
+> 💡 *Chỉ mục TF-IDF & BM25 sẽ được hệ thống tự động sinh khi ứng dụng khởi chạy.*
+
+---
+
+### Bước 6: Thiết lập Frontend
+
+1. Mở một cửa sổ terminal mới và vào thư mục `frontend`:
+
+   ```bash
+   cd frontend
+   npm install
+   ```
+2. Tạo file cấu hình `frontend/.env.local`:
+
+   - Tạo file `frontend/.env.local` với nội dung:
+     ```dotenv
+     UNIGUIDE_BACKEND_URL=http://localhost:8000
+     UNIGUIDE_API_TOKEN=uniguide-secret-local-token
+     ```
+
+   *(Lưu ý: `UNIGUIDE_API_TOKEN` phải giống nhau ở cả `backend/.env` và `frontend/.env.local`)*.
+
+---
+
+## 🏃 Chạy Ứng Dụng
+
+### Cách 1: Chạy giao diện Web (Fullstack)
+
+Mở **2 terminal** song song:
+
+- **Terminal 1 — Backend (FastAPI):**
+
+  ```bash
+  cd backend
+  # Đảm bảo đã activate .venv
+  uvicorn app.main:app --reload
+  ```
+
+  Backend chạy tại: `http://localhost:8000` (Tài liệu API: `http://localhost:8000/docs`).
+- **Terminal 2 — Frontend (Next.js):**
+
+  ```bash
+  cd frontend
+  npm run dev
+  ```
+
+  Mở trình duyệt truy cập: **`http://localhost:3000`**.
+
+---
+
+### Cách 2: Chạy trực tiếp trên Terminal (CLI Test)
+
+Nếu chỉ muốn test nhanh câu trả lời của AI và thuật toán tìm kiếm RAG mà không cần bật web:
 
 ```bash
 cd backend
-python -m venv .venv
+python run_rag_local.py
 ```
 
-Kích hoạt virtual environment:
+Nhập câu hỏi trực tiếp trên terminal (gõ `exit` để thoát).
 
-```powershell
-# Windows PowerShell
-.\.venv\Scripts\Activate.ps1
-```
+---
 
-```bash
-# macOS/Linux
-source .venv/bin/activate
-```
+## 🔄 Cách Đổi Sổ Tay Của Trường Khác
 
-Cài dependencies và chạy FastAPI:
+Giao diện đã được thiết kế sẵn dạng tổng quát. Khi muốn đổi sổ tay trường khác:
 
-```bash
-python -m pip install -r requirements.txt
-python -m uvicorn app.main:app --reload
-```
+1. Đặt file PDF sổ tay mới vào `data/raw/` (xóa file cũ).
+2. *(Tùy chọn)* Thay logo mới tại `frontend/public/logo.png`.
+3. Xóa các file trong `data/processed/` (nếu có).
+4. Chạy lại 2 lệnh xử lý:
+   ```bash
+   cd backend
+   python -m app.rag.preprocessing
+   python -m app.rag.embeddings
+   ```
+5. Khởi động lại backend là xong!
 
-Backend chạy tại `http://localhost:8000`:
+---
 
-- Health check: `GET http://localhost:8000/health`
-- Swagger UI: `http://localhost:8000/docs`
+## 🧪 Kiểm Thử (Testing)
 
-## Chạy Frontend
-
-Mở terminal khác:
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Frontend chạy tại `http://localhost:3000`.
-
-## Chuẩn bị deploy Vercel + Cloudflare Tunnel
-
-Luồng request sau khi deploy:
-
-```text
-Trình duyệt -> Vercel /api/chat -> Cloudflare Tunnel -> FastAPI -> RAG/Ollama
-```
-
-Trình duyệt không gọi trực tiếp FastAPI và không nhận được token backend. Route
-`frontend/src/app/api/chat/route.ts` chạy trên Vercel, tự gắn Bearer token rồi
-chuyển tiếp request tới máy Windows.
-
-### 1. Tạo token dùng chung
-
-Tạo một token ngẫu nhiên dài:
-
-```powershell
-python -c "import secrets; print(secrets.token_urlsafe(48))"
-```
-
-Không commit token này lên GitHub và không đặt tên biến có tiền tố
-`NEXT_PUBLIC_`.
-
-### 2. Chạy local
-
-Tạo `backend/.env` từ `backend/.env.example`, sau đó đặt token vừa tạo:
-
-```dotenv
-UNIGUIDE_API_TOKEN=<token-cua-ban>
-UNIGUIDE_CORS_ORIGINS=http://localhost:3000
-UNIGUIDE_RETRIEVAL_MODE=hybrid
-```
-
-Tạo `frontend/.env.local` từ `frontend/.env.example`:
-
-```dotenv
-UNIGUIDE_BACKEND_URL=http://localhost:8000
-UNIGUIDE_API_TOKEN=<cung-token-o-tren>
-```
-
-Sau đó chạy backend và frontend như bình thường. Frontend luôn gọi `/api/chat`;
-proxy của Next.js sẽ gọi `http://localhost:8000/api/v1/chat` khi chạy local.
-
-### 3. Cấu hình khi deploy
-
-Trên máy Windows:
-
-- Chạy FastAPI tại `http://localhost:8000`.
-- Đặt `UNIGUIDE_API_TOKEN` trong `backend/.env`.
-- Cho Cloudflare Tunnel chuyển tiếp hostname HTTPS tới
-  `http://localhost:8000`.
-
-Trên Vercel, cấu hình hai Environment Variables cho project frontend:
-
-```dotenv
-UNIGUIDE_BACKEND_URL=https://api.ten-mien-cua-ban.example
-UNIGUIDE_API_TOKEN=<cung-token-o-backend>
-```
-
-Redeploy frontend sau khi thêm hoặc đổi biến môi trường. Không cần thêm domain
-Vercel vào CORS khi dùng proxy cùng origin này; `UNIGUIDE_CORS_ORIGINS` chỉ dùng
-cho trường hợp một trình duyệt được phép gọi thẳng FastAPI.
-
-### 4. Kiểm tra trước khi công khai
-
-```powershell
-Test-Path .\frontend\src\app\api\chat\route.ts
-```
-
-Kết quả phải là `True`. Kiểm tra thêm:
-
-- `GET https://<hostname-tunnel>/health` trả `{"status":"ok"}`.
-- Gọi `/api/v1/chat` không có Bearer token phải trả HTTP `401`.
-- Gửi câu hỏi từ website Vercel phải đi qua `/api/chat` và nhận câu trả lời.
-
-Token chỉ ngăn truy cập trực tiếp trái phép vào FastAPI. Vì `/api/chat` là API
-công khai cho người dùng website, nên trước khi chia sẻ rộng cần cấu hình thêm
-rate limiting/WAF trên Vercel hoặc Cloudflare để tránh lạm dụng tài nguyên máy.
-
-## Chạy Preprocessing
-
-Sau khi đặt PDF vào `data/raw/handbook_k67.pdf`, chạy:
+Chạy bộ unit test tự động để kiểm tra toàn bộ pipeline:
 
 ```bash
 cd backend
-python -m app.rag.preprocessing
+pytest
 ```
 
-Các chunks sau xử lý được ghi vào `data/processed/handbook_k67.jsonl`.
-
-## RAG và kiểm thử regression
-
-Pipeline chat giữ Hybrid Retrieval tự xây dựng (TF-IDF + BM25 + RRF +
-reranking), sau đó phân tích dạng câu hỏi, chọn đúng phạm vi Điều/Khoản và chỉ
-mở rộng các mảnh cùng structural scope. Coverage được suy ra từ các mục, điều
-kiện và bước thực tế trong context; không cấu hình trước số claim theo chủ đề.
-
-Chạy toàn bộ unit/regression test:
-
-```bash
-cd backend
-python -m pytest -q
-```
-
-Đo Retrieval Hit@K/MRR trên ground truth:
-
-```bash
-python -m tests.evaluate_ground_truth
-```
-
-Khi Ollama đang chạy và có model `qwen3:4b`, chạy bộ 9 câu end-to-end để đo
-citation correctness, faithfulness, completeness, scope accuracy và abstention
-accuracy:
-
-```bash
-python -m tests.evaluate_rag_regression
-```
-
-Thay đổi logic query/retrieval/validation hiện tại không đổi schema chunk,
-vocabulary hoặc dữ liệu nguồn, vì vậy **không cần rebuild index**. Chỉ rebuild
-`data/processed/tfidf_index.json` khi PDF, preprocessing, tokenizer hoặc chunker
-thay đổi.
+*(138/138 tests sẽ tự động chạy và xác minh hệ thống hoạt động chính xác)*.

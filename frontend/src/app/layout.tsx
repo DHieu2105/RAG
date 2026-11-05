@@ -9,13 +9,20 @@ const beVietnamPro = Be_Vietnam_Pro({
 });
 
 export const metadata: Metadata = {
-  title: "Unimate — Trợ lý sinh viên ĐH Giao thông Vận tải",
-  description: "Unimate - Trợ lý AI tra cứu quy chế đào tạo tín chỉ, học bổng, điểm rèn luyện và học vụ Sổ tay K67 UTC.",
+  title: "Unimate — Trợ lý Sổ tay Sinh viên",
+  description: "Unimate - Trợ lý AI tra cứu quy chế đào tạo tín chỉ, học bổng, điểm rèn luyện và học vụ từ Sổ tay sinh viên.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="vi" className={beVietnamPro.variable}>
+    <html lang="vi" className={beVietnamPro.variable} suppressHydrationWarning>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var t=localStorage.getItem("utc-assistant-theme")||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.setAttribute("data-theme",t);}catch(e){}})()`,
+          }}
+        />
+      </head>
       <body>{children}</body>
     </html>
   );

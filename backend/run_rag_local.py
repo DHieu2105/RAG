@@ -1,17 +1,23 @@
 import sys
 import time
 
-from app.rag.from_scratch.index_store import load_index
+from app.rag.from_scratch.index_store import INDEX_PATH, load_index, save_index
 from app.rag.from_scratch.bm25 import build_bm25_index
-from app.rag.from_scratch.pipeline import chat_with_sources
+from app.rag.from_scratch.pipeline import build_index, chat_with_sources
 
 if hasattr(sys.stdin, "reconfigure"):
     sys.stdin.reconfigure(encoding="utf-8")
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-print("Đang tải RAG Index...")
-chunks, vectorizer, vectors = load_index()
+if not INDEX_PATH.exists():
+    print("Chưa tìm thấy index đã lưu, đang tự động xây dựng index từ sổ tay...")
+    chunks, vectorizer, vectors = build_index()
+    save_index(chunks, vectorizer, vectors)
+    print("Đã lưu index tại:", INDEX_PATH)
+else:
+    print("Đang tải RAG Index...")
+    chunks, vectorizer, vectors = load_index()
 
 print("Đang khởi tạo BM25...")
 bm25 = build_bm25_index(chunks)

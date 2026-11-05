@@ -45,28 +45,28 @@ const SUGGESTIONS = [
     category: "Đào tạo & Tín chỉ",
     title: "Đăng ký tín chỉ",
     desc: "Quy định số tín chỉ tối thiểu & tối đa mỗi kỳ",
-    query: "Quy định về số tín chỉ tối thiểu và tối đa sinh viên UTC được đăng ký trong một học kỳ?",
+    query: "Quy định về số tín chỉ tối thiểu và tối đa sinh viên được đăng ký trong một học kỳ?",
     badge: "Học kỳ 1 & 2",
   },
   {
     category: "Quy chế học vụ",
     title: "Cảnh báo học tập",
     desc: "Điều kiện bị cảnh báo học tập & buộc thôi học",
-    query: "Sinh viên UTC bị cảnh báo học tập khi nào và bị mấy lần thì buộc thôi học?",
+    query: "Sinh viên bị cảnh báo học tập khi nào và bị mấy lần thì buộc thôi học?",
     badge: "Quy chế đào tạo",
   },
   {
     category: "Chuẩn đầu ra",
     title: "Xét tốt nghiệp",
     desc: "Điều kiện tốt nghiệp & chuẩn ngoại ngữ, tin học",
-    query: "Điều kiện công nhận tốt nghiệp và chuẩn đầu ra Ngoại ngữ, Tin học của K67 UTC?",
-    badge: "Chuẩn K67",
+    query: "Điều kiện công nhận tốt nghiệp và chuẩn đầu ra Ngoại ngữ, Tin học theo quy định?",
+    badge: "Chuẩn đầu ra",
   },
   {
     category: "Chế độ chính sách",
     title: "Học bổng & Rèn luyện",
     desc: "Tiêu chí xét học bổng khuyến khích học tập",
-    query: "Tiêu chuẩn xét cấp học bổng khuyến khích học tập và cách đánh giá điểm rèn luyện tại UTC?",
+    query: "Tiêu chuẩn xét cấp học bổng khuyến khích học tập và cách đánh giá điểm rèn luyện?",
     badge: "Chính sách",
   },
 ];
@@ -209,7 +209,7 @@ function Sidebar({
           <div className="brand-logo-container">
             <Image
               src={LOGO_SRC}
-              alt="Logo Trường Đại học Giao thông Vận tải"
+              alt="Logo Sổ tay Sinh viên"
               width={38}
               height={38}
               className="utc-logo-img"
@@ -218,7 +218,7 @@ function Sidebar({
           </div>
           <div className="brand-copy">
             <strong>{APP_NAME}</strong>
-            <span>ĐẠI HỌC GIAO THÔNG VẬN TẢI</span>
+            <span>SỔ TAY SINH VIÊN</span>
           </div>
         </div>
 
@@ -274,20 +274,6 @@ function Sidebar({
             })
           )}
         </nav>
-
-        <div className="sidebar-footer">
-          <div className={`utc-status-card is-${backendStatus}`}>
-            <div className="utc-badge-pulse" />
-            <div className="utc-status-copy">
-              <strong>Sổ tay Sinh viên K67</strong>
-              <span>
-                {backendStatus === "online" && "Đại học Giao thông Vận tải • Online"}
-                {backendStatus === "offline" && "Chưa kết nối Backend (Offline)"}
-                {backendStatus === "checking" && "Đang kiểm tra kết nối..."}
-              </span>
-            </div>
-          </div>
-        </div>
       </aside>
     </>
   );
@@ -329,18 +315,18 @@ function HelpMenu({ onNewChat }: { onNewChat: () => void }) {
         <Icon src={ICONS.help} />
       </button>
       {open && (
-        <div className="help-popover" id="help-popover" role="dialog" aria-label="Hướng dẫn sử dụng trợ lý UTC">
+        <div className="help-popover" id="help-popover" role="dialog" aria-label="Hướng dẫn sử dụng trợ lý">
           <div className="help-popover-title">
             <div className="help-popover-icon">
               <Icon src={ICONS.help} />
             </div>
             <div>
               <strong>Cẩm nang tra cứu học vụ</strong>
-              <span>Dành cho sinh viên Trường ĐH Giao thông Vận tải</span>
+              <span>Dành cho sinh viên tra cứu học vụ</span>
             </div>
           </div>
           <p className="help-desc">
-            {APP_NAME} đối chiếu trực tiếp từ <strong>Sổ tay sinh viên K67</strong> của UTC. Hãy hỏi rõ ràng và cụ thể về:
+            {APP_NAME} đối chiếu trực tiếp từ <strong>Sổ tay sinh viên</strong>. Hãy hỏi rõ ràng và cụ thể về:
           </p>
           <div className="help-examples">
             <div className="help-example-pill">Đăng ký tín chỉ & xét vượt</div>
@@ -445,7 +431,7 @@ function Topbar({
         <div className="mobile-logo-container">
           <Image
             src={LOGO_SRC}
-            alt="Logo UTC"
+            alt="Logo Sổ tay Sinh viên"
             width={28}
             height={28}
             className="utc-logo-img"
@@ -454,14 +440,14 @@ function Topbar({
         </div>
         <div className="mobile-brand">
           <strong>{APP_NAME}</strong>
-          <span>TRỢ LÝ SINH VIÊN UTC</span>
+          <span>TRỢ LÝ SINH VIÊN</span>
         </div>
       </div>
 
       <div className="breadcrumbs">
-        <span className="breadcrumb-school">ĐH Giao thông Vận tải</span>
+        <span className="breadcrumb-school">Sổ tay Sinh viên</span>
         <span className="breadcrumb-divider">/</span>
-        <strong>Cố vấn học vụ & quy chế K67</strong>
+        <strong>Cố vấn học vụ & quy chế</strong>
       </div>
 
       <div className="topbar-spacer" />
@@ -478,7 +464,7 @@ function Topbar({
       >
         <span className="scope-dot" />
         <span>
-          {backendStatus === "online" && "Sổ tay K67 Online"}
+          {backendStatus === "online" && "Sổ tay Online"}
           {backendStatus === "offline" && "Mất kết nối Backend"}
           {backendStatus === "checking" && "Đang kết nối..."}
         </span>
@@ -530,10 +516,10 @@ function AssistantAnswer({ answer, sources = [] }: { answer: string; sources?: S
       <article className="answer-card">
         <div className="answer-title">
           <div className="answer-title-group">
-            <h2>{APP_NAME} — Cố vấn học vụ UTC</h2>
+            <h2>{APP_NAME} — Cố vấn học vụ</h2>
             <span className="verified-badge">
               <span className="verified-dot" />
-              Sổ tay K67
+              Sổ tay Sinh viên
             </span>
           </div>
           <span className={`source-status-badge ${sources.length > 0 ? "has-sources" : ""}`}>
@@ -583,7 +569,7 @@ function AssistantAnswer({ answer, sources = [] }: { answer: string; sources?: S
             <span>{copied ? "Đã sao chép" : "Sao chép"}</span>
           </button>
           <span className="ai-note">
-            Thông tin mang tính tham khảo từ Sổ tay K67. Đối chiếu quy định chính thức tại Phòng Đào tạo UTC.
+            Thông tin mang tính tham khảo từ Sổ tay Sinh viên. Đối chiếu quy định chính thức tại Phòng Đào tạo của Nhà trường.
           </span>
         </div>
       </article>
@@ -608,7 +594,7 @@ function SourcePanel({
         </div>
         <div className="source-heading-text">
           <h2>Tài liệu đối chiếu</h2>
-          <p className="source-subtitle">Cơ sở dữ liệu Sổ tay K67 UTC</p>
+          <p className="source-subtitle">Cơ sở dữ liệu Sổ tay Sinh viên</p>
         </div>
         <button
           className="panel-close-btn"
@@ -625,7 +611,7 @@ function SourcePanel({
         <div className="document-icon">
           <Image
             src={LOGO_SRC}
-            alt="Sổ tay K67 UTC"
+            alt="Sổ tay Sinh viên"
             width={28}
             height={28}
             className="utc-logo-img"
@@ -633,8 +619,8 @@ function SourcePanel({
           />
         </div>
         <div className="document-copy">
-          <h3>Sổ tay Sinh viên K67</h3>
-          <p>Trường Đại học Giao thông Vận tải</p>
+          <h3>Sổ tay Sinh viên</h3>
+          <p>Tài liệu quy chế & học vụ</p>
         </div>
         <div className="document-meta">
           <strong className="document-pages-tag">PDF · 97 trang</strong>
@@ -679,7 +665,7 @@ function SourcePanel({
                     {evidence.length > 0 ? evidence.map((excerpt, excerptIndex) => (
                       <blockquote key={`${index}-${excerptIndex}`}>{excerpt}</blockquote>
                     )) : (
-                      <p className="citation-empty">Đoạn trích từ nội dung điều khoản Sổ tay K67.</p>
+                      <p className="citation-empty">Đoạn trích từ nội dung điều khoản Sổ tay Sinh viên.</p>
                     )}
                   </div>
                 </details>
@@ -736,22 +722,20 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      const savedTheme = window.localStorage.getItem("utc-assistant-theme") as "light" | "dark" | null;
-      const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-      const initialTheme = savedTheme ?? (prefersDark ? "dark" : "light");
-      setTheme(initialTheme);
-      document.documentElement.setAttribute("data-theme", initialTheme);
-    }, 0);
-
-    return () => window.clearTimeout(timer);
+    const savedTheme = window.localStorage.getItem("utc-assistant-theme") as "light" | "dark" | null;
+    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    const initialTheme = savedTheme ?? (prefersDark ? "dark" : "light");
+    setTheme(initialTheme);
+    document.documentElement.setAttribute("data-theme", initialTheme);
   }, []);
 
   function toggleTheme() {
     const nextTheme = theme === "light" ? "dark" : "light";
-    setTheme(nextTheme);
-    window.localStorage.setItem("utc-assistant-theme", nextTheme);
     document.documentElement.setAttribute("data-theme", nextTheme);
+    setTheme(nextTheme);
+    try {
+      window.localStorage.setItem("utc-assistant-theme", nextTheme);
+    } catch {}
   }
 
   useEffect(() => {
@@ -950,9 +934,9 @@ export default function Home() {
               {activeConversationId === null ? (
                 <div className="hero-welcome">
                   <div className="eyebrow">
-                    <span className="eyebrow-emblem">UTC</span>
+                    <span className="eyebrow-emblem">SỔ TAY</span>
                     <span className="eyebrow-divider">•</span>
-                    <b>TRỢ LÝ QUY CHẾ & HỌC VỤ K67</b>
+                    <b>TRỢ LÝ QUY CHẾ & HỌC VỤ</b>
                   </div>
 
                   <h1 className="hero-title">
@@ -960,8 +944,8 @@ export default function Home() {
                   </h1>
 
                   <p className="intro">
-                    Hệ thống AI hỗ trợ sinh viên <strong>Trường Đại học Giao thông Vận tải</strong> tra cứu chính xác
-                    quy chế đào tạo tín chỉ, học bổng, điểm rèn luyện và điều kiện tốt nghiệp từ Sổ tay sinh viên K67.
+                    Hệ thống AI hỗ trợ sinh viên tra cứu chính xác quy chế đào tạo tín chỉ,
+                    học bổng, điểm rèn luyện và điều kiện tốt nghiệp từ <strong>Sổ tay sinh viên</strong>.
                   </p>
 
                   <div className="suggestions-grid">
@@ -1001,7 +985,7 @@ export default function Home() {
                           <Fragment key={`${activeConversation.id}-${index}`}>
                             {showDateDivider && (
                               <div className="date-divider">
-                                <span>HỌC VỤ & QUY CHẾ UTC • {formatDateLabel(msgTimestamp)}</span>
+                                <span>HỌC VỤ & QUY CHẾ • {formatDateLabel(msgTimestamp)}</span>
                               </div>
                             )}
                             {message.role === "user" ? (
@@ -1034,7 +1018,7 @@ export default function Home() {
                           <div className="loading-pulse-dot" />
                           <div className="loading-copy">
                             <strong>{APP_NAME} đang đối chiếu dữ liệu...</strong>
-                            <span>Đang trích xuất quy chế và điều khoản từ Sổ tay K67 UTC</span>
+                            <span>Đang trích xuất quy chế và điều khoản từ Sổ tay sinh viên</span>
                           </div>
                         </div>
                       )}
@@ -1063,7 +1047,7 @@ export default function Home() {
                 </button>
               </div>
               <p className="composer-disclaimer">
-                {APP_NAME} sử dụng nội dung Sổ tay Sinh viên K67 để đối chiếu. Luôn kiểm tra thông báo chính thức tại Cổng thông tin đào tạo UTC.
+                {APP_NAME} sử dụng nội dung Sổ tay Sinh viên để đối chiếu. Luôn kiểm tra thông báo chính thức tại Cổng thông tin đào tạo của Nhà trường.
               </p>
             </form>
           </section>

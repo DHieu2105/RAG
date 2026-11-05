@@ -8,10 +8,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 
 from app.rag.from_scratch.bm25 import build_bm25_index
-from app.rag.from_scratch.index_store import load_index
+from app.rag.from_scratch.index_store import INDEX_PATH, load_index, save_index
 from app.rag.from_scratch.pipeline import (
     HYBRID_RETRIEVAL_MODE,
     SUPPORTED_RETRIEVAL_MODES,
+    build_index,
     chat_with_sources,
 )
 from app.schemas.chat import ChatRequest, ChatResponse
@@ -52,7 +53,11 @@ router = APIRouter(dependencies=[Depends(require_api_token)])
 
 @lru_cache(maxsize=1)
 def get_rag_index():
-    """Load the persisted index once for the lifetime of this process."""
+    """Load the persisted index once, or build it if missing."""
+    if not INDEX_PATH.exists():
+        chunks, vectorizer, vectors = build_index()
+        save_index(chunks, vectorizer, vectors)
+        return chunks, vectorizer, vectors
     return load_index()
 
 
