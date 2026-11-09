@@ -7,8 +7,11 @@ from typing import Any
 from urllib.request import Request, urlopen
 
 
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
 MODEL_NAME = os.getenv("OLLAMA_MODEL", "qwen3:4b")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
 INSUFFICIENT_ANSWER = (
     "Tài liệu được cung cấp chưa đủ thông tin để trả lời chắc chắn câu hỏi này."
 )
@@ -239,21 +242,85 @@ def _clean_thinking(raw_content: str) -> str:
     return raw_content.strip()
 
 
+def _request_gemini(
+    system_prompt: str,
+    prompt_text: str,
+    history: list[dict[str, str]] | None = None,
+) -> str:
+    """Send request to Google Gemini API using urllib."""
+    api_key = os.getenv("GEMINI_API_KEY", GEMINI_API_KEY).strip()
+    model = os.getenv("GEMINI_MODEL", GEMINI_MODEL).strip() or "gemini-3.5-flash-lite"
+    if not api_key:
+        raise ValueError("Chưa cấu hình GEMINI_API_KEY trong .env")
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+
+    contents: list[dict[str, Any]] = []
+    if history:
+        for msg in history:
+            role = "user" if msg.get("role") == "user" else "model"
+            contents.append({
+                "role": role,
+                "parts": [{"text": msg.get("content", "")}],
+            })
+
+    contents.append({
+        "role": "user",
+        "parts": [{"text": prompt_text}],
+    })
+
+    payload = {
+        "system_instruction": {
+            "parts": [{"text": system_prompt}],
+        },
+        "contents": contents,
+        "generationConfig": {
+            "temperature": 0.1,
+            "maxOutputTokens": 2048,
+        },
+    }
+
+    request_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = Request(
+        url,
+        data=request_body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    with urlopen(request) as response:
+        response_data = json.load(response)
+
+    candidates = response_data.get("candidates", [])
+    if candidates and "content" in candidates[0]:
+        parts = candidates[0]["content"].get("parts", [])
+        if parts and "text" in parts[0]:
+            return parts[0]["text"].strip()
+
+    return "Không nhận được phản hồi từ Gemini API."
+
+
 def generate_answer(
     question: str,
     context: str,
     history: list[dict[str, str]] | None = None,
 ) -> str:
-    """Ask Ollama to answer a question using only the supplied context."""
+    """Ask Google Gemini API or Ollama to answer a question using only the supplied context."""
+    provider = os.getenv("LLM_PROVIDER", LLM_PROVIDER).strip().lower()
+    prompt_text = (
+        f"Câu hỏi: {question}\n\n"
+        f"[Tài liệu tham khảo]:\n{context}"
+    )
+
+    if provider == "gemini":
+        return _request_gemini(SYSTEM_PROMPT, prompt_text, history=history)
+
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages.extend(history or [])
     messages.append(
         {
             "role": "user",
-            "content": (
-                f"Câu hỏi: {question}\n\n"
-                f"[Tài liệu tham khảo]:\n{context}"
-            ),
+            "content": prompt_text,
         }
     )
     response_data = _request_ollama(messages)

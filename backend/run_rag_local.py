@@ -1,6 +1,10 @@
 import sys
 import time
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from app.rag.from_scratch.index_store import INDEX_PATH, load_index, save_index
 from app.rag.from_scratch.bm25 import build_bm25_index
 from app.rag.from_scratch.pipeline import build_index, chat_with_sources
