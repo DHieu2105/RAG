@@ -794,20 +794,38 @@ def _select_cited_sources(
                     "Evidence không xuất hiện trong đúng tài liệu và khoản viện dẫn"
                 )
 
+        evidence_list = []
+        if isinstance(evidence, str) and evidence.strip():
+            evidence_list = [evidence.strip()]
+        elif chunk.get("text") and str(chunk["text"]).strip():
+            evidence_list = [str(chunk["text"]).strip()]
+
+        article_title = chunk.get("article_title")
+        if not article_title:
+            if chunk.get("article") is not None:
+                article_title = f"Điều {chunk.get('article')}"
+            elif chunk.get("chapter_title"):
+                article_title = chunk.get("chapter_title")
+            elif chunk.get("part_title"):
+                part_num = chunk.get("part")
+                article_title = f"Phần {part_num}: {chunk.get('part_title')}" if part_num else chunk.get("part_title")
+            elif chunk.get("part"):
+                article_title = f"Phần {chunk.get('part')}"
+            else:
+                article_title = "Quy định liên quan"
+
         source = {
             "part": chunk.get("part"),
             "chapter": chunk.get("chapter"),
             "article": chunk.get("article"),
             "part_title": chunk.get("part_title"),
             "chapter_title": chunk.get("chapter_title"),
-            "article_title": chunk.get("article_title"),
+            "article_title": article_title,
             "clauses": sorted(set(clauses)),
             "page_start": chunk.get("page_start"),
             "page_end": chunk.get("page_end"),
             "claims": [claim] if isinstance(claim, str) and claim.strip() else [],
-            "evidence": (
-                [evidence.strip()] if isinstance(evidence, str) else []
-            ),
+            "evidence": evidence_list,
         }
         identity = (
             source["part"],

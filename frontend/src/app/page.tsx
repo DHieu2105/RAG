@@ -492,6 +492,78 @@ function Topbar({
   );
 }
 
+function formatInlineText(text: string) {
+  const parts = [];
+  const regex = /(\*?\((?:Khoản|Điều|Phần|Chương|Mục)[^)]+\)\*?|\*\*.*?\*\*|\*.*?\*|`.*?`)/gi;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(text.slice(lastIndex, match.index));
+    }
+    const token = match[0];
+    const isCitation = /^\*?\((?:Khoản|Điều|Phần|Chương|Mục)/i.test(token);
+
+    if (isCitation) {
+      const cleanText = token.replace(/^\*+|\*+$/g, "");
+      parts.push(
+        <span key={match.index} className="answer-inline-citation">
+          {cleanText}
+        </span>
+      );
+    } else if (token.startsWith("**") && token.endsWith("**")) {
+      parts.push(
+        <strong key={match.index} className="answer-bold">
+          {token.slice(2, -2)}
+        </strong>
+      );
+    } else if (token.startsWith("*") && token.endsWith("*")) {
+      parts.push(<em key={match.index}>{token.slice(1, -1)}</em>);
+    } else if (token.startsWith("`") && token.endsWith("`")) {
+      parts.push(
+        <code key={match.index} className="answer-code">
+          {token.slice(1, -1)}
+        </code>
+      );
+    }
+    lastIndex = regex.lastIndex;
+  }
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+  return parts.length > 0 ? parts : text;
+}
+
+function parseAnswerBlocks(rawAnswer: string) {
+  if (!rawAnswer) return [];
+  const normalized = rawAnswer
+    .replace(/([.!?;:\)])\s*[-–—•*]\s+/g, "$1\n- ")
+    .replace(/(^|\n)\s*([a-zđ]\)|\d+[\.)])\s+/gi, "$1- ")
+    .trim();
+
+  const lines = normalized.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const blocks: { type: "paragraph" | "list"; items?: string[]; text?: string }[] = [];
+
+  let currentList: string[] = [];
+  for (const line of lines) {
+    if (/^[-–—•*]\s+/.test(line)) {
+      currentList.push(line.replace(/^[-–—•*]\s+/, ""));
+    } else {
+      if (currentList.length > 0) {
+        blocks.push({ type: "list", items: currentList });
+        currentList = [];
+      }
+      blocks.push({ type: "paragraph", text: line });
+    }
+  }
+  if (currentList.length > 0) {
+    blocks.push({ type: "list", items: currentList });
+  }
+
+  return blocks;
+}
+
 function AssistantAnswer({ answer, sources = [] }: { answer: string; sources?: Source[] }) {
   const [copied, setCopied] = useState(false);
 
@@ -528,9 +600,25 @@ function AssistantAnswer({ answer, sources = [] }: { answer: string; sources?: S
         </div>
 
         <div className="dynamic-answer-text">
-          {answer.split("\n\n").map((paragraph, pIdx) => (
-            <p key={pIdx}>{paragraph}</p>
-          ))}
+          {parseAnswerBlocks(answer).map((block, bIdx) => {
+            if (block.type === "list" && block.items) {
+              return (
+                <ul key={bIdx} className="answer-bullet-list">
+                  {block.items.map((item, iIdx) => (
+                    <li key={iIdx} className="answer-list-item">
+                      <span className="bullet-indicator" aria-hidden="true" />
+                      <div className="bullet-content">{formatInlineText(item)}</div>
+                    </li>
+                  ))}
+                </ul>
+              );
+            }
+            return (
+              <p key={bIdx} className="answer-paragraph">
+                {formatInlineText(block.text ?? "")}
+              </p>
+            );
+          })}
         </div>
 
         {sources.length > 0 && (
@@ -637,7 +725,10 @@ function SourcePanel({
           <div className="citation-card">
             {sources.map((source, index) => {
               const articleName = source.article_title
-                ?? (source.article === null ? "Quy định liên quan" : `Điều ${source.article}`);
+                ?? (source.article !== null
+                    ? `Điều ${source.article}`
+                    : (source.chapter_title 
+                        ?? (source.part_title ? `Phần ${source.part}: ${source.part_title}` : (source.part ? `Phần ${source.part}` : "Quy định học vụ"))));
               const page = source.page_start === null
                 ? "Không rõ trang"
                 : source.page_end !== null && source.page_end !== source.page_start
@@ -663,9 +754,13 @@ function SourcePanel({
                       </p>
                     )}
                     {evidence.length > 0 ? evidence.map((excerpt, excerptIndex) => (
-                      <blockquote key={`${index}-${excerptIndex}`}>{excerpt}</blockquote>
+                      <blockquote key={`${index}-${excerptIndex}`} className="citation-text">
+                        {excerpt}
+                      </blockquote>
                     )) : (
-                      <p className="citation-empty">Đoạn trích từ nội dung điều khoản Sổ tay Sinh viên.</p>
+                      <p className="citation-empty">
+                        (Dữ liệu lưu từ phiên trước chưa có trích đoạn chi tiết. Hãy hỏi lại trong cuộc trò chuyện mới để tải nguyên văn từ Sổ tay).
+                      </p>
                     )}
                   </div>
                 </details>

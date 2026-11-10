@@ -1081,6 +1081,7 @@ button {
   font-weight: 500;
   line-height: 1.5;
   word-break: break-word;
+  white-space: pre-wrap;
 }
 
 .message-error {
@@ -1210,18 +1211,89 @@ button {
 
 /* Dynamic Answer Text */
 .dynamic-answer-text {
-  font-size: 13px;
-  line-height: 1.6;
+  font-size: 13.5px;
+  line-height: 1.68;
   color: var(--brand-ink);
   word-break: break-word;
+  letter-spacing: -0.006em;
 }
 
-.dynamic-answer-text p {
-  margin: 0 0 8px;
+.dynamic-answer-text p,
+.dynamic-answer-text .answer-paragraph {
+  margin: 0 0 10px;
+  white-space: pre-line;
 }
 
-.dynamic-answer-text p:last-child {
+.dynamic-answer-text p:last-child,
+.dynamic-answer-text .answer-paragraph:last-child {
   margin-bottom: 0;
+}
+
+.answer-bullet-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0 12px;
+  padding-left: 0;
+  list-style: none;
+}
+
+.answer-list-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  line-height: 1.62;
+}
+
+.bullet-indicator {
+  display: inline-block;
+  flex: 0 0 6px;
+  width: 6px;
+  height: 6px;
+  margin-top: 8px;
+  border-radius: 50%;
+  background: var(--brand-blue);
+  box-shadow: 0 0 0 2.5px var(--brand-blue-soft);
+}
+
+.bullet-content {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.answer-bold {
+  font-weight: 650;
+  color: var(--brand-ink);
+}
+
+.answer-code {
+  display: inline-block;
+  padding: 1px 5px;
+  margin: 0 2px;
+  border-radius: var(--radius-sm);
+  background: var(--brand-surface-subtle);
+  border: 1px solid var(--brand-border);
+  color: var(--brand-blue);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.answer-inline-citation {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: var(--radius-sm, 4px);
+  background: var(--brand-blue-soft, rgba(26, 115, 232, 0.08));
+  border: 1px solid var(--brand-blue-border, rgba(26, 115, 232, 0.2));
+  color: var(--brand-blue, #1a73e8);
+  font-size: 0.84em;
+  font-weight: 500;
+  font-style: normal;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  vertical-align: baseline;
 }
 
 /* Citation Banner inside Assistant message */
@@ -1691,15 +1763,19 @@ button {
   font-weight: 600;
 }
 
-.citation-detail blockquote {
-  margin: 0;
-  padding: 5px 8px;
+.citation-detail blockquote,
+.citation-detail .citation-text {
+  margin: 0 0 6px;
+  padding: 8px 10px;
   border-left: 3px solid var(--brand-amber);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
   background: var(--brand-amber-soft);
   color: var(--brand-ink-secondary);
-  font-size: 10px;
-  line-height: 1.45;
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-line;
+  max-height: 240px;
+  overflow-y: auto;
 }
 
 .citation-empty {

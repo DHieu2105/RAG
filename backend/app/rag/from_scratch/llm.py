@@ -6,6 +6,8 @@ import re
 from typing import Any
 from urllib.request import Request, urlopen
 
+from dotenv import load_dotenv
+
 
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
@@ -62,17 +64,15 @@ GROUNDED_ANSWER_SCHEMA = {
     "required": ["claims"],
     "additionalProperties": False,
 }
-SYSTEM_PROMPT = """Bạn là trợ lý sinh viên UTC hỗ trợ giải đáp thông tin quy chế, quy định dựa trên Sổ tay sinh viên K67.
+SYSTEM_PROMPT = """Bạn là trợ lý học vụ thông minh hỗ trợ sinh viên giải đáp quy chế, quy định từ Sổ tay sinh viên.
 
-Nhiệm vụ và nguyên tắc bắt buộc:
-1. Luôn trả lời hoàn toàn bằng tiếng Việt, đi thẳng vào trọng tâm câu hỏi, tự nhiên, rõ ràng và mạch lạc.
-2. Chỉ trả lời dựa trên tài liệu tham khảo được cung cấp. Xem các mục [Tài liệu N] là các ứng viên do bộ tìm kiếm cung cấp, không phải tất cả đều là nguồn của câu trả lời; chỉ dùng mục trực tiếp chứng minh. Tuyệt đối không suy đoán, bịa đặt hoặc dùng kiến thức bên ngoài tài liệu.
-3. Không kể lại quá trình tìm kiếm tài liệu, không nhắc đến các nhãn "Tài liệu 1", "Tài liệu 2" hay các nhãn tương tự trong nội dung câu trả lời.
-4. Không tự kiểm tra, nghi ngờ hay bình luận/sửa đổi năm ban hành của các văn bản quy phạm pháp luật, quyết định được trích trong tài liệu.
-5. Giữ nguyên các điều kiện, tiêu chuẩn, ngoại lệ, con số và từ ngữ quan trọng trong văn bản. Không tự bổ sung điều kiện không có trong tài liệu.
-6. Nếu tài liệu tham khảo có thông tin liên quan nhưng chưa đủ thông tin để trả lời chắc chắn, hãy trả lời phần có căn cứ và nói rõ phần còn thiếu chưa có trong tài liệu thay vì tự đoán.
-7. Nếu tài liệu tham khảo hoàn toàn không có thông tin liên quan hoặc không thể trả lời câu hỏi, hãy trả lời chính xác:
-   "Không tìm thấy thông tin liên quan trong sổ tay sinh viên UTC K67."
+Quy tắc trả lời BẮT BUỘC:
+1. TRẢ LỜI NGẮN GỌN, SÚC TÍCH, ĐI THẲNG VÀO TRỌNG TÂM CÂU HỎI. Tuyệt đối không mở bài, chào hỏi hay giải thích lan man dài dòng.
+2. Trình bày bằng các gạch đầu dòng rõ ràng (- ...). Mỗi ý bắt buộc phải trên một dòng riêng biệt, không viết liền khối.
+3. ĐIỀU KHOẢN TRÍCH DẪN: Ở cuối mỗi gạch đầu dòng, BẮT BUỘC ghi rõ căn cứ quy định trong ngoặc đơn dựa trên metadata của [Tài liệu tham khảo], ví dụ: *(Khoản 1 Điều 15, Trang 25)* hoặc *(Điều 11, Trang 23)* hoặc *(Phần 2.7, Trang 50)*.
+4. Chỉ sử dụng thông tin có trong [Tài liệu tham khảo]. Giữ nguyên các con số, ngưỡng điểm, số tín chỉ, mốc thời gian và điều kiện bắt buộc. Tuyệt đối không suy đoán hay thêm thắt ngoài tài liệu.
+5. Nếu tài liệu tham khảo hoàn toàn không có thông tin liên quan hoặc không thể trả lời, hãy trả lời chính xác:
+   "Không tìm thấy thông tin liên quan trong sổ tay sinh viên."
 """
 STRUCTURED_SYSTEM_PROMPT = SYSTEM_PROMPT + """
 
@@ -223,8 +223,18 @@ def _request_ollama(
         method="POST",
     )
 
-    with urlopen(request) as response:
-        response_data = json.load(response)
+    try:
+        with urlopen(request, timeout=90) as response:
+            response_data = json.load(response)
+    except Exception as exc:
+        error_msg = f"Lỗi gọi Gemini API: {exc}"
+        if hasattr(exc, "read"):
+            try:
+                error_msg += f" - {exc.read().decode('utf-8')}"
+            except Exception:
+                pass
+        print(f"[Gemini Error] {error_msg}")
+        raise RuntimeError(error_msg) from exc
     return response_data
 
 
@@ -248,8 +258,9 @@ def _request_gemini(
     history: list[dict[str, str]] | None = None,
 ) -> str:
     """Send request to Google Gemini API using urllib."""
-    api_key = os.getenv("GEMINI_API_KEY", GEMINI_API_KEY).strip()
-    model = os.getenv("GEMINI_MODEL", GEMINI_MODEL).strip() or "gemini-3.5-flash-lite"
+    load_dotenv(override=True)
+    api_key = os.getenv("GEMINI_API_KEY", "").strip() or GEMINI_API_KEY
+    model = os.getenv("GEMINI_MODEL", "").strip() or "gemini-3.5-flash-lite"
     if not api_key:
         raise ValueError("Chưa cấu hình GEMINI_API_KEY trong .env")
 
@@ -288,8 +299,18 @@ def _request_gemini(
         method="POST",
     )
 
-    with urlopen(request) as response:
-        response_data = json.load(response)
+    try:
+        with urlopen(request, timeout=90) as response:
+            response_data = json.load(response)
+    except Exception as exc:
+        error_msg = f"Lỗi gọi Gemini API: {exc}"
+        if hasattr(exc, "read"):
+            try:
+                error_msg += f" - {exc.read().decode('utf-8')}"
+            except Exception:
+                pass
+        print(f"[Gemini Error] {error_msg}")
+        raise RuntimeError(error_msg) from exc
 
     candidates = response_data.get("candidates", [])
     if candidates and "content" in candidates[0]:
@@ -306,7 +327,8 @@ def generate_answer(
     history: list[dict[str, str]] | None = None,
 ) -> str:
     """Ask Google Gemini API or Ollama to answer a question using only the supplied context."""
-    provider = os.getenv("LLM_PROVIDER", LLM_PROVIDER).strip().lower()
+    load_dotenv(override=True)
+    provider = os.getenv("LLM_PROVIDER", "").strip().lower() or LLM_PROVIDER
     prompt_text = (
         f"Câu hỏi: {question}\n\n"
         f"[Tài liệu tham khảo]:\n{context}"
