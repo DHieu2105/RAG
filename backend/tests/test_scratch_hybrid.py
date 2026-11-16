@@ -77,6 +77,8 @@ def test_hybrid_reranks_only_when_query_is_expanded() -> None:
         vectorizer,
         vectors,
         bm25_index,
+        use_query_processing=True,
+        use_reranking=True,
     )
 
     assert "retrieval_score" not in plain[0]

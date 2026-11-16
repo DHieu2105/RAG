@@ -97,8 +97,8 @@ def test_chat_keeps_original_question_when_search_is_expanded() -> None:
     ) as mocked_generate_answer:
         chat(question, chunks, vectorizer, vectors)
 
-    ollama_question = mocked_generate_answer.call_args.args[0]
-    assert ollama_question == question
+    forwarded_question = mocked_generate_answer.call_args.args[0]
+    assert forwarded_question == question
 
 
 def test_fusion_validates_configuration() -> None:

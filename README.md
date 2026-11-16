@@ -1,6 +1,6 @@
 # UniGuide AI — Trợ Lý Tra Cứu Sổ Tay Sinh Viên (RAG)
 
-UniGuide AI là trợ lý ảo hỏi đáp thông minh dành cho sinh viên, sử dụng kiến trúc **RAG (Retrieval-Augmented Generation)** kết hợp tìm kiếm đa tầng (**TF-IDF + BM25 + Vector Embedding**) và LLM local qua **Ollama**.
+UniGuide AI là trợ lý ảo hỏi đáp thông minh dành cho sinh viên, sử dụng kiến trúc **RAG (Retrieval-Augmented Generation)** kết hợp tìm kiếm đa tầng (**TF-IDF + BM25 + Vector Embedding**) và LLM qua **Google Gemini API**.
 
 Hệ thống hỗ trợ tra cứu chính xác quy chế đào tạo tín chỉ, học bổng, điểm rèn luyện, chuẩn đầu ra... có trích dẫn rõ ràng (Điều, Khoản, số trang). Dự án được thiết kế linh hoạt, dễ dàng áp dụng cho sổ tay của bất kỳ trường nào.
 
@@ -12,7 +12,7 @@ Cài đặt sẵn trên máy tính:
 
 1. **Python 3.12+**
 2. **Node.js 20+** & **npm**
-3. **[Ollama](https://ollama.com/)** (để chạy AI trên máy của bạn)
+3. **Google Gemini API Key** (tạo miễn phí tại [Google AI Studio](https://aistudio.google.com/))
 
 ---
 
@@ -27,15 +27,10 @@ cd RAG-simple
 
 ---
 
-### Bước 2: Bật mô hình AI với Ollama
+### Bước 2: Lấy Google Gemini API Key
 
-1. Tải và cài đặt Ollama từ [ollama.com](https://ollama.com).
-2. Mở terminal bất kỳ và tải model về máy:
-   ```bash
-   ollama pull qwen3:4b
-   ```
-
-   *(Nếu máy cấu hình vừa phải, bạn có thể dùng `ollama pull qwen2.5:3b`)*.
+1. Truy cập [Google AI Studio](https://aistudio.google.com/) và tạo một API Key (hoàn toàn miễn phí).
+2. Lưu lại API key này để điền vào cấu hình `.env` ở Bước 4.
 
 ---
 
@@ -80,8 +75,9 @@ cd RAG-simple
      UNIGUIDE_API_TOKEN=uniguide-secret-local-token
      UNIGUIDE_CORS_ORIGINS=http://localhost:3000
      UNIGUIDE_RETRIEVAL_MODE=hybrid
-     OLLAMA_URL=http://127.0.0.1:11434/api/chat
-     OLLAMA_MODEL=qwen3:4b
+     LLM_PROVIDER=gemini
+     GEMINI_API_KEY=your-gemini-api-key-here
+     GEMINI_MODEL=gemini-3.5-flash-lite
      ```
 
 ---

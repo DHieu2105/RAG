@@ -1,4 +1,4 @@
-"""Compare four lexical retrieval configurations without calling Ollama."""
+"""Compare four lexical retrieval configurations without calling LLM."""
 
 import sys
 

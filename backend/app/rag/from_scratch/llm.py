@@ -1,69 +1,28 @@
-"""Generate grounded answers with Ollama using the standard library."""
+"""Generate answers with Google Gemini API using the standard library."""
 
 import json
 import os
-import re
+from pathlib import Path
+import time
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from dotenv import load_dotenv
 
 
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
-MODEL_NAME = os.getenv("OLLAMA_MODEL", "qwen3:4b")
+def _ensure_env() -> None:
+    backend_env = Path(__file__).resolve().parents[3] / ".env"
+    if backend_env.exists():
+        load_dotenv(backend_env, override=False)
+    load_dotenv(override=False)
+
+
+_ensure_env()
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
-INSUFFICIENT_ANSWER = (
-    "Tài liệu được cung cấp chưa đủ thông tin để trả lời chắc chắn câu hỏi này."
-)
-GROUNDED_ANSWER_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "claims": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string"},
-                    "citations": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "document": {
-                                    "type": "integer",
-                                    "minimum": 1,
-                                },
-                                "clauses": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "integer",
-                                        "minimum": 1,
-                                    },
-                                    "maxItems": 1,
-                                    "uniqueItems": True,
-                                },
-                                "evidence": {"type": "string"},
-                            },
-                            "required": [
-                                "document",
-                                "clauses",
-                                "evidence",
-                            ],
-                            "additionalProperties": False,
-                        },
-                    },
-                },
-                "required": ["text", "citations"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    "required": ["claims"],
-    "additionalProperties": False,
-}
+
 SYSTEM_PROMPT = """Bạn là trợ lý học vụ thông minh hỗ trợ sinh viên giải đáp quy chế, quy định từ Sổ tay sinh viên.
 
 Quy tắc trả lời BẮT BUỘC:
@@ -74,182 +33,6 @@ Quy tắc trả lời BẮT BUỘC:
 5. Nếu tài liệu tham khảo hoàn toàn không có thông tin liên quan hoặc không thể trả lời, hãy trả lời chính xác:
    "Không tìm thấy thông tin liên quan trong sổ tay sinh viên."
 """
-STRUCTURED_SYSTEM_PROMPT = SYSTEM_PROMPT + """
-
-Hãy tạo câu trả lời dưới dạng danh sách claim độc lập để API tự ghép thành câu
-trả lời. Không tự viết Điều, Khoản hoặc trang trong `text` vì API sẽ hiển thị
-metadata đã kiểm tra.
-
-- Mỗi `text` chỉ chứa một ý có thể kiểm chứng. Mỗi sự kiện, quy định, con số,
-  điều kiện hoặc kết luận phải có ít nhất một citation trực tiếp chứng minh.
-- `text` là phần trả lời dành cho người đọc: phải diễn giải ngắn gọn bằng ngôn ngữ
-  tự nhiên, không chép nguyên cả đoạn tài liệu và không lặp lại nội dung dài đã đặt
-  trong `evidence`. Giữ nguyên các tỷ lệ, điều kiện và ngoại lệ làm thay đổi kết quả.
-- Với câu hỏi liệt kê, tách các nhóm đối tượng độc lập thành các claim riêng; không
-  dồn nhiều nhóm vào một câu dài bằng chuỗi dấu chấm phẩy. Mỗi claim tự nêu rõ chế
-  độ áp dụng, ví dụ `Miễn 100%:` hoặc `Giảm 70%:`.
-- Sau nhãn chế độ, mỗi claim bắt buộc phải nêu rõ ai thuộc nhóm đó hoặc điều kiện
-  nào phải thỏa. Tuyệt đối không trả một nhãn rỗng như `Miễn 100%:` hay
-  `Giảm 70%:` mà không có nội dung giải thích phía sau.
-- Có thể tóm tắt các trường hợp con nằm bên trong cùng một `Coverage S...` bằng
-  tên nhóm pháp lý khái quát. Không được dùng một Coverage unit để đại diện, gộp
-  hoặc bỏ qua một Coverage unit khác; mỗi nhãn Coverage phải có claim và citation
-  riêng. Phần trích nguyên văn đầy đủ vẫn đặt trong `evidence`.
-- Với câu hỏi liệt kê tổng quan không có yêu cầu "chi tiết", "cụ thể", "tất cả"
-  hoặc "đầy đủ", mỗi claim nên tối đa khoảng 60 từ. Nếu một Coverage unit nêu tên
-  nhóm rồi có phần `Cụ thể:` liệt kê ví dụ, chỉ diễn giải tên nhóm trong `text`,
-  không chép danh sách ví dụ, không thêm ngoặc liệt kê và không viết `v.v.`; vẫn
-  trích đoạn gốc trong `evidence`.
-- Với câu hỏi hỏi một hệ quả có xảy ra hay không, phải tách đủ: câu trả lời
-  trực tiếp, ngưỡng/điều kiện tạo ra trạng thái trung gian, và điều kiện dẫn
-  từ trạng thái đó tới hệ quả. Không được nhảy thẳng tới hệ quả.
-- Không gộp ngưỡng tạo ra trạng thái trung gian với số lần lặp của trạng thái
-  đó thành một điều kiện mới. Ví dụ nếu mức điểm thấp dẫn tới "cảnh báo" và
-  nhiều lần cảnh báo mới dẫn tới "buộc thôi học", phải viết thành hai bước;
-  không được nói mức điểm thấp lặp lại trực tiếp dẫn tới buộc thôi học.
-- Với câu hỏi hẹp không yêu cầu liệt kê, ưu tiên tối đa 3 claim: cách thực hiện
-  trực tiếp, giới hạn bắt buộc chính và ngoại lệ gắn trực tiếp (nếu có). Nếu
-  câu hỏi yêu cầu liệt kê các đối tượng/trường hợp hoặc có các ý bắt buộc phải
-  bao phủ, không giới hạn số claim: phải tạo đủ claim có căn cứ cho toàn bộ các
-  nhóm được hỏi. Không tự mở rộng sang chủ đề kề bên nếu người dùng không hỏi.
-- Không tạo hai claim lặp lại cùng một kết luận bằng cách diễn đạt khác nhau.
-- Nếu user prompt có các dòng `Coverage S...`, đó là các đơn vị thông tin được
-  máy trích trực tiếp từ context. Phải bao phủ từng đơn vị còn thuộc phạm vi
-  câu hỏi bằng một claim riêng theo đúng thứ tự, nhưng không được sao chép
-  checklist như một đáp án không kiểm chứng.
-- Mỗi claim trong câu trả lời liệt kê phải tự nêu rõ chế độ/kết quả đang được
-  hỏi; không để người đọc phải suy ra từ claim trước.
-- `evidence` phải là một đoạn sao chép nguyên văn, liên tục từ đúng phần Nội
-  dung của [Tài liệu N], đủ để chứng minh `text`; không diễn đạt lại evidence.
-- `clauses` chỉ chứa đúng các khoản thực sự được dùng cho claim. Ví dụ chunk
-  có Khoản 1, 2, 3, 4 nhưng claim chỉ dựa vào khoản 2 thì trả `[2]`, không trả
-  `[1,2,3,4]`. Mỗi citation chỉ trỏ một khoản. Với tài liệu không có Khoản,
-  trả `[]`.
-- Trước khi hoàn tất, kiểm tra lại rằng câu trả lời đã nêu đủ các ngưỡng,
-  điều kiện kế tiếp, ngoại lệ và hệ quả trực tiếp cần thiết để người đọc không
-  hiểu sai. Không thêm quy định ngoài phạm vi câu hỏi.
-- Trả về đúng JSON, không markdown, theo dạng:
-  {"claims":[
-    {"text":"một ý trả lời có căn cứ", "citations":[
-      {"document":1,"clauses":[2],"evidence":"đoạn nguyên văn"}
-    ]}
-  ]}
-- `document` là số trong nhãn [Tài liệu N]. Không viện dẫn mục chỉ liên quan
-  chủ đề nhưng không trực tiếp chứng minh claim.
-- Nếu không có claim nào đủ căn cứ, trả `{"claims":[]}`. Không tự tạo
-  citation."""
-
-
-_DETAIL_REQUEST_CUES = ("chi tiết", "cụ thể", "tất cả", "đầy đủ")
-
-
-def _concise_reader_claim(
-    question: str,
-    claim_text: str,
-    claim_citations: list[object],
-) -> str:
-    """Remove copied example lists while preserving their cited category."""
-    folded_question = question.casefold()
-    if any(cue in folded_question for cue in _DETAIL_REQUEST_CUES):
-        return claim_text
-    if len(claim_text.split()) <= 40:
-        return claim_text
-
-    evidence_with_examples = next(
-        (
-            str(citation.get("evidence"))
-            for citation in claim_citations
-            if isinstance(citation, dict)
-            and isinstance(citation.get("evidence"), str)
-            and "cụ thể:" in citation["evidence"].casefold()
-        ),
-        None,
-    )
-    if evidence_with_examples is None:
-        return claim_text
-
-    label, separator, description = claim_text.partition(":")
-    if separator:
-        summarized_description = description.split("(", 1)[0].strip(" .;,")
-        if 3 <= len(summarized_description.split()) <= 30:
-            return f"{label.strip()}: {summarized_description}."
-
-    category_prefix = re.split(
-        r"cụ\s+thể\s*:",
-        evidence_with_examples,
-        maxsplit=1,
-        flags=re.IGNORECASE,
-    )[0]
-    grounded_summary = re.sub(r"^\s*\d+\.\s*", "", category_prefix)
-    grounded_summary = re.sub(
-        r"(?i)\s+(?<!\w)[a-zđ]\.\s+",
-        ": ",
-        grounded_summary,
-        count=1,
-    ).strip(" .;,")
-    item_markers = list(
-        re.finditer(r"(?i)(?<!\w)[a-zđ]\.\s+", category_prefix)
-    )
-    if item_markers:
-        category_prefix = category_prefix[item_markers[-1].end():]
-    category = category_prefix.strip(" .;,")
-    if separator and category:
-        return f"{label.strip()}: {category}."
-    if grounded_summary:
-        return grounded_summary + "."
-    return claim_text
-
-
-def _request_ollama(
-    messages: list[dict[str, str]],
-    *,
-    structured: bool = False,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "model": MODEL_NAME,
-        "messages": messages,
-        "stream": False,
-        "think": False,
-        "options": {"temperature": 0 if structured else 0.1},
-    }
-    if structured:
-        payload["format"] = GROUNDED_ANSWER_SCHEMA
-
-    request_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    request = Request(
-        OLLAMA_URL,
-        data=request_body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-
-    try:
-        with urlopen(request, timeout=90) as response:
-            response_data = json.load(response)
-    except Exception as exc:
-        error_msg = f"Lỗi gọi Gemini API: {exc}"
-        if hasattr(exc, "read"):
-            try:
-                error_msg += f" - {exc.read().decode('utf-8')}"
-            except Exception:
-                pass
-        print(f"[Gemini Error] {error_msg}")
-        raise RuntimeError(error_msg) from exc
-    return response_data
-
-
-def _clean_thinking(raw_content: str) -> str:
-    """Clean all thinking/reasoning traces and return only the final answer."""
-    if not isinstance(raw_content, str):
-        return ""
-    # If </think> is present, take everything after the last </think>
-    if "</think>" in raw_content:
-        raw_content = raw_content.rsplit("</think>", 1)[-1]
-    # Remove any full <think>...</think> tag blocks
-    raw_content = re.sub(r"(?s)<think>.*?</think>", "", raw_content)
-    # Remove any unclosed <think> tag residue
-    raw_content = re.sub(r"(?s)<think>.*", "", raw_content)
-    return raw_content.strip()
 
 
 def _request_gemini(
@@ -257,10 +40,10 @@ def _request_gemini(
     prompt_text: str,
     history: list[dict[str, str]] | None = None,
 ) -> str:
-    """Send request to Google Gemini API using urllib."""
-    load_dotenv(override=True)
+    """Send request to Google Gemini API using urllib with transient retry."""
+    _ensure_env()
     api_key = os.getenv("GEMINI_API_KEY", "").strip() or GEMINI_API_KEY
-    model = os.getenv("GEMINI_MODEL", "").strip() or "gemini-3.5-flash-lite"
+    model = os.getenv("GEMINI_MODEL", "").strip() or GEMINI_MODEL or "gemini-3.5-flash-lite"
     if not api_key:
         raise ValueError("Chưa cấu hình GEMINI_API_KEY trong .env")
 
@@ -299,18 +82,29 @@ def _request_gemini(
         method="POST",
     )
 
-    try:
-        with urlopen(request, timeout=90) as response:
-            response_data = json.load(response)
-    except Exception as exc:
-        error_msg = f"Lỗi gọi Gemini API: {exc}"
-        if hasattr(exc, "read"):
-            try:
-                error_msg += f" - {exc.read().decode('utf-8')}"
-            except Exception:
-                pass
-        print(f"[Gemini Error] {error_msg}")
-        raise RuntimeError(error_msg) from exc
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            with urlopen(request, timeout=90) as response:
+                response_data = json.load(response)
+            break
+        except Exception as exc:
+            is_transient = False
+            if isinstance(exc, HTTPError) and exc.code in (429, 500, 502, 503, 504):
+                is_transient = True
+            elif isinstance(exc, URLError):
+                is_transient = True
+            if is_transient and attempt < max_retries - 1:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            error_msg = f"Lỗi gọi Gemini API: {exc}"
+            if hasattr(exc, "read"):
+                try:
+                    error_msg += f" - {exc.read().decode('utf-8')}"
+                except Exception:
+                    pass
+            print(f"[Gemini Error] {error_msg}")
+            raise RuntimeError(error_msg) from exc
 
     candidates = response_data.get("candidates", [])
     if candidates and "content" in candidates[0]:
@@ -326,110 +120,9 @@ def generate_answer(
     context: str,
     history: list[dict[str, str]] | None = None,
 ) -> str:
-    """Ask Google Gemini API or Ollama to answer a question using only the supplied context."""
-    load_dotenv(override=True)
-    provider = os.getenv("LLM_PROVIDER", "").strip().lower() or LLM_PROVIDER
+    """Ask Google Gemini API to answer a question using only the supplied context."""
     prompt_text = (
         f"Câu hỏi: {question}\n\n"
         f"[Tài liệu tham khảo]:\n{context}"
     )
-
-    if provider == "gemini":
-        return _request_gemini(SYSTEM_PROMPT, prompt_text, history=history)
-
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    messages.extend(history or [])
-    messages.append(
-        {
-            "role": "user",
-            "content": prompt_text,
-        }
-    )
-    response_data = _request_ollama(messages)
-    raw_content = response_data.get("message", {}).get("content", "")
-    return _clean_thinking(raw_content)
-
-
-def generate_grounded_answer(
-    question: str,
-    context: str,
-    history: list[dict[str, str]] | None = None,
-    *,
-    answer_requirements: list[str] | None = None,
-) -> dict[str, Any]:
-    """Generate an answer and explicit document/clause citations."""
-    messages = [{"role": "system", "content": STRUCTURED_SYSTEM_PROMPT}]
-    messages.extend(history or [])
-    requirements = ""
-    if answer_requirements:
-        requirements = "\n\nCác ý bắt buộc phải bao phủ:\n" + "\n".join(
-            f"- {requirement}" for requirement in answer_requirements
-        )
-    messages.append(
-        {
-            "role": "user",
-            "content": (
-                f"Câu hỏi: {question}\n\n"
-                f"Tài liệu tham khảo:\n{context}"
-                f"{requirements}"
-            ),
-        }
-    )
-    response_data = _request_ollama(messages, structured=True)
-    content = response_data["message"]["content"]
-    try:
-        result = json.loads(content)
-    except json.JSONDecodeError as error:
-        raise ValueError("Ollama trả về citation không phải JSON hợp lệ") from error
-
-    if not isinstance(result, dict) or not isinstance(result.get("claims"), list):
-        raise ValueError("Ollama trả về cấu trúc citation không hợp lệ")
-
-    answer_parts: list[str] = []
-    citations: list[dict[str, Any]] = []
-    for claim in result["claims"]:
-        if (
-            not isinstance(claim, dict)
-            or not isinstance(claim.get("text"), str)
-            or not claim["text"].strip()
-            or not isinstance(claim.get("citations"), list)
-            or not claim["citations"]
-        ):
-            raise ValueError("Ollama trả về một claim không hợp lệ")
-
-        claim_text = _concise_reader_claim(
-            question,
-            claim["text"].strip(),
-            claim["citations"],
-        )
-        answer_parts.append(claim_text)
-        for citation in claim["citations"]:
-            if (
-                not isinstance(citation, dict)
-                or not isinstance(citation.get("document"), int)
-                or isinstance(citation["document"], bool)
-                or not isinstance(citation.get("clauses"), list)
-                or len(citation["clauses"]) > 1
-                or not all(
-                    isinstance(clause, int) and not isinstance(clause, bool)
-                    for clause in citation["clauses"]
-                )
-                or not isinstance(citation.get("evidence"), str)
-                or not citation["evidence"].strip()
-            ):
-                raise ValueError("Ollama trả về một citation không hợp lệ")
-            citations.append(
-                {
-                    "claim": claim_text,
-                    "document": citation["document"],
-                    "clauses": citation["clauses"],
-                    "evidence": citation["evidence"].strip(),
-                }
-            )
-
-    if not answer_parts:
-        return {"answer": INSUFFICIENT_ANSWER, "citations": []}
-    answer = answer_parts[0]
-    if len(answer_parts) > 1:
-        answer = "\n".join(f"- {part}" for part in answer_parts)
-    return {"answer": answer, "citations": citations}
+    return _request_gemini(SYSTEM_PROMPT, prompt_text, history=history)

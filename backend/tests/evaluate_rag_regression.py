@@ -1,4 +1,4 @@
-"""Run the fixed end-to-end RAG regression set against local Ollama."""
+"""Run the fixed end-to-end RAG regression set against Google Gemini."""
 
 import json
 from pathlib import Path

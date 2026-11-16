@@ -1,7 +1,9 @@
 """End-to-end indexing pipeline built from the from-scratch components."""
 
+import os
 import re
 import sys
+from typing import Any
 import unicodedata
 from enum import Enum
 
@@ -24,7 +26,7 @@ from .grounding import (
     validate_claim_faithfulness,
 )
 from .index_store import INDEX_PATH, load_index, save_index
-from .llm import generate_answer, generate_grounded_answer
+from .llm import generate_answer
 from .preprocessing import preprocess_pages
 from .query_processing import (
     generate_answer_requirements,
@@ -43,7 +45,7 @@ MAX_CONTEXT_CHARS = 16_000
 MAX_CONTEXT_CHUNKS = 16
 MAX_GENERATION_ATTEMPTS = 2
 ORIGINAL_QUERY_WEIGHT = 1.1
-DEBUG_RAG = True
+DEBUG_RAG = os.getenv("RAG_DEBUG", "0").lower() in ("1", "true", "yes")
 NO_RELEVANT_DOCUMENT_ANSWER = "Không tìm thấy tài liệu liên quan trong sổ tay."
 INCOMPLETE_CONTEXT_ANSWER = (
     "Đã tìm thấy tài liệu liên quan nhưng ngữ cảnh truy xuất chưa đủ để trả lời chắc chắn."
@@ -66,6 +68,21 @@ class AnswerState(str, Enum):
 
 def classify_answer_state(answer: str) -> AnswerState:
     """Map the unchanged API answer field to an explicit internal state."""
+    refusal_phrases = (
+        "không tìm thấy thông tin liên quan",
+        "không có thông tin liên quan",
+        "không tìm thấy tài liệu liên quan",
+    )
+    answer_lower = answer.lower()
+    if any(phrase in answer_lower for phrase in refusal_phrases):
+        return AnswerState.NO_RELEVANT_DOCUMENT
+    if "chưa đủ thông tin để trả lời chắc chắn" in answer_lower:
+        return AnswerState.INCOMPLETE_CONTEXT
+    if INCOMPLETE_GENERATION_ANSWER.lower() in answer_lower:
+        return AnswerState.INCOMPLETE_GENERATION
+    if INVALID_CITATION_ANSWER.lower() in answer_lower:
+        return AnswerState.INVALID_CITATION
+
     states = {
         NO_RELEVANT_DOCUMENT_ANSWER: AnswerState.NO_RELEVANT_DOCUMENT,
         INCOMPLETE_CONTEXT_ANSWER: AnswerState.INCOMPLETE_CONTEXT,
@@ -202,29 +219,55 @@ def ask_hybrid(
     bm25_index: BM25Index,
     top_k: int = DEFAULT_TOP_K,
     candidate_k: int = DEFAULT_CANDIDATE_K,
+    *,
+    use_query_processing: bool = False,
+    use_reranking: bool = False,
 ) -> list[dict]:
-    """Fuse query-processed TF-IDF and BM25 rankings."""
-    tfidf_results = ask_with_query_processing(
-        question,
-        chunks,
-        vectorizer,
-        document_vectors,
-        top_k=candidate_k,
-        candidate_k=candidate_k,
-    )
-    bm25_results = ask_bm25_with_query_processing(
-        question,
-        chunks,
-        bm25_index,
-        top_k=candidate_k,
-        candidate_k=candidate_k,
-    )
+    """Fuse TF-IDF and BM25 rankings.
+
+    By default in the simplified production path, query expansion and reranking
+    are removed to keep the user query unchanged and avoid noisy alias drifts.
+    """
+    if use_query_processing:
+        tfidf_results = ask_with_query_processing(
+            question,
+            chunks,
+            vectorizer,
+            document_vectors,
+            top_k=candidate_k,
+            candidate_k=candidate_k,
+        )
+        bm25_results = ask_bm25_with_query_processing(
+            question,
+            chunks,
+            bm25_index,
+            top_k=candidate_k,
+            candidate_k=candidate_k,
+        )
+    else:
+        tfidf_results = ask(
+            question,
+            chunks,
+            vectorizer,
+            document_vectors,
+            top_k=candidate_k,
+        )
+        bm25_results = ask_bm25(
+            question,
+            chunks,
+            bm25_index,
+            top_k=candidate_k,
+        )
+
     fused = reciprocal_rank_fusion(
         [tfidf_results, bm25_results],
-        top_k=candidate_k,
+        top_k=candidate_k if use_reranking else top_k,
         source_score_name="hybrid_source_score",
     )
-    search_queries = generate_search_queries(question)
+    if not use_reranking:
+        return fused[:top_k]
+
+    search_queries = generate_search_queries(question) if use_query_processing else [question]
     if len(search_queries) <= 1:
         return fused[:top_k]
 
@@ -244,7 +287,7 @@ def chat(
     bm25_index: BM25Index | None = None,
     retrieval_mode: str = HYBRID_RETRIEVAL_MODE,
 ) -> str:
-    """Retrieve relevant chunks and use Ollama to answer the question."""
+    """Retrieve relevant chunks and use Gemini to answer the question."""
     results = retrieve_for_chat(
         question,
         chunks,
@@ -410,14 +453,19 @@ def _prepare_chat_context(
     results: list[dict],
     all_chunks: list[dict],
 ) -> list[dict]:
-    """Reassemble split consecutive fragments of the same clause into continuous text."""
+    """Reassemble split consecutive fragments of the same scope into continuous text."""
     if not results or not all_chunks:
         return results
 
-    expanded: list[dict] = []
-    seen: set[tuple[object, ...]] = set()
+    def _scope(c: dict) -> tuple[object, ...]:
+        return (
+            c.get("part"),
+            c.get("chapter"),
+            c.get("article"),
+            tuple(c.get("clauses") or []),
+        )
 
-    def chunk_id(c: dict) -> tuple[object, ...]:
+    def _chunk_id(c: dict) -> tuple[object, ...]:
         return (
             c.get("part"),
             c.get("chapter"),
@@ -428,36 +476,135 @@ def _prepare_chat_context(
             c.get("text"),
         )
 
-    chunk_to_index = {chunk_id(c): idx for idx, c in enumerate(all_chunks)}
+    chunk_to_index = {_chunk_id(c): idx for idx, c in enumerate(all_chunks)}
+    ordered_chunks: list[dict] = []
+    seen_indices: set[int] = set()
 
     for r in results:
-        cid = chunk_id(r)
-        if cid not in seen:
-            seen.add(cid)
-            expanded.append(r)
+        idx = chunk_to_index.get(_chunk_id(r))
+        if idx is None:
+            ordered_chunks.append(r)
+            continue
 
-        idx = chunk_to_index.get(cid)
-        if idx is not None:
-            for adj_idx in (idx - 1, idx + 1):
-                if 0 <= adj_idx < len(all_chunks):
-                    adj_c = all_chunks[adj_idx]
-                    if (
-                        adj_c.get("part") == r.get("part")
-                        and adj_c.get("chapter") == r.get("chapter")
-                        and adj_c.get("article") == r.get("article")
-                        and adj_c.get("clauses") == r.get("clauses")
-                        and adj_c.get("clauses")
-                    ):
-                        adj_cid = chunk_id(adj_c)
-                        if adj_cid not in seen:
-                            seen.add(adj_cid)
-                            expanded.append(adj_c)
+        r_scope = _scope(r)
+        start = idx
+        while start > 0 and _scope(all_chunks[start - 1]) == r_scope:
+            start -= 1
+        end = idx
+        while end < len(all_chunks) - 1 and _scope(all_chunks[end + 1]) == r_scope:
+            end += 1
 
-    return _merge_same_scope_fragments(expanded)
+        for i in range(start, end + 1):
+            if i not in seen_indices:
+                seen_indices.add(i)
+                ordered_chunks.append(all_chunks[i])
+
+    return _merge_same_scope_fragments(ordered_chunks)
+
+
+def _parse_claim_citations(raw_line: str) -> tuple[str, list[dict[str, Any]]]:
+    """Extract metadata citations from line and return clean claim text."""
+    cite_matches = list(
+        re.finditer(
+            r"[\*\s]*\(([^)]*(?:Điều|Khoản|Phần|Trang|Tài liệu)[^)]*)\)[\*\s]*",
+            raw_line,
+            re.IGNORECASE,
+        )
+    )
+    citations: list[dict[str, Any]] = []
+    for m in cite_matches:
+        s = m.group(1)
+        info: dict[str, Any] = {}
+        art_m = re.search(r"Điều\s+(\d+)", s, re.IGNORECASE)
+        if art_m:
+            info["article"] = int(art_m.group(1))
+        cl_m = re.search(r"Khoản\s+(\d+)", s, re.IGNORECASE)
+        if cl_m:
+            info["clause"] = int(cl_m.group(1))
+        p_m = re.search(r"Phần\s+([0-9.]+)", s, re.IGNORECASE)
+        if p_m:
+            info["part"] = p_m.group(1)
+        pg_m = re.search(r"Trang\s+(?:PDF\s+)?(\d+)", s, re.IGNORECASE)
+        if pg_m:
+            info["page"] = int(pg_m.group(1))
+        doc_m = re.search(r"Tài liệu\s+(\d+)", s, re.IGNORECASE)
+        if doc_m:
+            info["document"] = int(doc_m.group(1))
+        citations.append(info)
+
+    clean = re.sub(
+        r"[\*\s]*\(([^)]*(?:Điều|Khoản|Phần|Trang|Tài liệu)[^)]*)\)[\*\s]*",
+        " ",
+        raw_line,
+        flags=re.IGNORECASE,
+    )
+    clean = re.sub(r"\s+", " ", clean).strip(" .;,*-")
+    return clean, citations
+
+
+def _clean_tokens(text: str, stopwords: set[str]) -> set[str]:
+    """Extract lowercase tokens stripped of punctuation and stopwords."""
+    tokens = set()
+    for w in tokenize(text.lower()):
+        cleaned = w.strip(".,;:?!\"'()[]{}-*")
+        if cleaned and cleaned not in stopwords and len(cleaned) > 1:
+            tokens.add(cleaned)
+    return tokens
+
+
+def _extract_best_evidence_sentence(
+    chunk_text: str,
+    claim_tokens: set[str],
+    stopwords: set[str],
+    clean_claim: str = "",
+) -> str:
+    """Find the sentence in chunk_text with the strongest support for the claim."""
+    pattern = r"[\n\r]+|(?<!\b\d)(?<!\b[a-zA-Z])[.!?]\s+"
+    sentences = [
+        s.strip()
+        for s in re.split(pattern, chunk_text)
+        if s.strip()
+    ]
+    if not sentences:
+        return chunk_text
+
+    # Extract 2-word shingles from clean_claim for phrase bonus
+    claim_words = (
+        [
+            w.strip(".,;:?!\"'()[]{}-*")
+            for w in tokenize(clean_claim.lower())
+            if w.strip(".,;:?!\"'()[]{}-*") not in stopwords
+            and len(w.strip(".,;:?!\"'()[]{}-*")) > 1
+        ]
+        if clean_claim
+        else []
+    )
+    shingles = [" ".join(claim_words[i:i + 2]) for i in range(len(claim_words) - 1)]
+
+    best_sent = sentences[0]
+    best_score = -1.0
+    for s in sentences:
+        s_tokens = _clean_tokens(s, stopwords)
+        if not s_tokens:
+            continue
+        overlap = len(claim_tokens & s_tokens)
+        s_lower = s.lower()
+        shingle_score = sum(3.0 for sh in shingles if sh in s_lower)
+        raw_score = float(overlap) + shingle_score
+        # Length normalization to prevent verbose boilerplate sentences from beating short focused evidence
+        norm_score = raw_score / (len(s_tokens) ** 0.4)
+        if norm_score > best_score:
+            best_score = norm_score
+            best_sent = s
+    return best_sent
 
 
 def _filter_supporting_sources(results: list[dict], answer: str) -> list[dict]:
-    """Filter candidate chunks to only those whose content actually supports the answer."""
+    """Verify evidence against candidate chunks and return verified source citations.
+
+    Never falls back to all results when unverified. Sources must have verified
+    evidence supporting an actual claim from the answer.
+    """
     if not results or not answer:
         return []
 
@@ -465,7 +612,7 @@ def _filter_supporting_sources(results: list[dict], answer: str) -> list[dict]:
         "không tìm thấy thông tin liên quan",
         "không có thông tin liên quan",
         "không tìm thấy tài liệu liên quan",
-        "tài liệu được cung cấp chưa đủ thông tin để trả lời chắc chắn",
+        "tài liệu được cung cấp chưa đủ thông tin",
     )
     if any(phrase in answer.lower() for phrase in refusal_phrases):
         return []
@@ -476,33 +623,159 @@ def _filter_supporting_sources(results: list[dict], answer: str) -> list[dict]:
         "trên", "khi", "nếu", "thì", "một", "những", "người", "quy", "định", "phần",
         "điều", "khoản", "trang", "sổ", "tay", "utc", "k67", "vay", "vốn",
     }
-    ans_tokens = set(tokenize(answer)) - stopwords
-    answer_lower = answer.lower()
 
-    supported: list[dict] = []
-    for chunk in results:
-        c_text = str(chunk.get("text", "")).lower()
-        c_tokens = set(tokenize(c_text)) - stopwords
-        overlap = ans_tokens & c_tokens
+    lines = [l.strip() for l in answer.splitlines() if l.strip()]
+    claims_to_check: list[str] = []
+    for l in lines:
+        if l.startswith(("- ", "* ")):
+            claims_to_check.append(l[2:].strip())
+        elif re.match(r"^\d+\.\s+", l):
+            claims_to_check.append(re.sub(r"^\d+\.\s+", "", l).strip())
+    if not claims_to_check:
+        claims_to_check = [s.strip() for s in re.split(r"(?<=[.!?])\s+", answer) if s.strip()]
 
-        # Check if 3-word phrase from answer appears in chunk text
-        phrase_found = False
-        words = [w for w in tokenize(answer) if w not in stopwords and len(w) > 1]
-        for i in range(len(words) - 2):
-            shingle = " ".join(words[i:i + 3])
-            if shingle in c_text:
-                phrase_found = True
-                break
+    verified_sources: list[dict] = []
+    seen: dict[tuple[object, ...], dict] = {}
 
-        # Check if clause is explicitly referenced in answer
-        clauses = chunk.get("clauses") or []
-        clause_ref = any(f"khoản {cl}" in answer_lower for cl in clauses)
+    for raw_claim in claims_to_check:
+        clean_claim, citations = _parse_claim_citations(raw_claim)
+        if not clean_claim:
+            continue
 
-        if phrase_found or clause_ref or len(overlap) >= 15:
-            supported.append(chunk)
+        claim_tokens = _clean_tokens(clean_claim, stopwords)
+        claim_numbers = set(
+            re.findall(r"(?<![A-Za-z0-9_/-])\d+(?:[.,]\d+)?%?(?![A-Za-z0-9_/-])", clean_claim)
+        )
 
-    final_chunks = supported if supported else results
-    return _select_sources(final_chunks)
+        has_explicit_article = any("article" in cite for cite in citations)
+        has_explicit_doc = any("document" in cite for cite in citations)
+
+        matching_chunks: list[tuple[float, dict, str]] = []
+        for idx, chunk in enumerate(results, start=1):
+            c_text = str(chunk.get("text") or "")
+            c_tokens = _clean_tokens(c_text, stopwords)
+            overlap = len(claim_tokens & c_tokens)
+
+            matched_cite = False
+            for cite in citations:
+                if cite.get("document") == idx:
+                    matched_cite = True
+                    break
+                if "article" in cite and chunk.get("article") == cite["article"]:
+                    if "clause" in cite and chunk.get("clauses"):
+                        if cite["clause"] in chunk["clauses"]:
+                            matched_cite = True
+                            break
+                    else:
+                        matched_cite = True
+                        break
+                elif "clause" in cite and chunk.get("clauses") and cite["clause"] in chunk["clauses"]:
+                    if "page" in cite:
+                        page_start = chunk.get("page_start")
+                        page_end = chunk.get("page_end") or page_start
+                        if page_start is not None and page_start <= cite["page"] <= page_end:
+                            matched_cite = True
+                            break
+                    else:
+                        matched_cite = True
+                        break
+
+            # If the claim explicitly cited a specific article or document,
+            # only consider chunks matching that citation.
+            if (has_explicit_article or has_explicit_doc) and not matched_cite:
+                continue
+
+            num_ok = True
+            if claim_numbers:
+                c_num_str = c_text.replace(",", ".")
+                has_any_num = any(
+                    num in c_text or num.replace(",", ".") in c_num_str
+                    for num in claim_numbers
+                )
+                if not has_any_num:
+                    num_ok = False
+
+            evidence = _extract_best_evidence_sentence(
+                c_text, claim_tokens, stopwords, clean_claim=clean_claim
+            )
+            s_tokens = _clean_tokens(evidence, stopwords)
+            sent_overlap = len(claim_tokens & s_tokens)
+
+            # Shingle check for 2 or 3 word sequences
+            shingle_match = False
+            claim_words = [
+                w.strip(".,;:?!\"'()[]{}-*")
+                for w in tokenize(clean_claim.lower())
+                if w.strip(".,;:?!\"'()[]{}-*") not in stopwords
+                and len(w.strip(".,;:?!\"'()[]{}-*")) > 1
+            ]
+            c_lower = c_text.lower()
+            for i in range(len(claim_words) - 1):
+                shingle = " ".join(claim_words[i:i + 2])
+                if shingle in c_lower:
+                    shingle_match = True
+                    break
+
+            is_supported = False
+            if matched_cite:
+                # Even with explicit citation, chunk must contain semantic evidence and consistent numbers
+                if num_ok and overlap >= 2 and sent_overlap >= 1:
+                    is_supported = True
+            else:
+                # Without explicit citation, require stronger lexical/shingle support
+                if num_ok and sent_overlap >= 1 and ((overlap >= 3 and shingle_match) or overlap >= 4):
+                    is_supported = True
+
+            if is_supported:
+                score = (100.0 if matched_cite else 0.0) + float(overlap) + float(sent_overlap)
+                matching_chunks.append((score, chunk, evidence))
+
+        if matching_chunks:
+            matching_chunks.sort(key=lambda x: x[0], reverse=True)
+            _, best_chunk, best_evidence = matching_chunks[0]
+
+            article_title = best_chunk.get("article_title")
+            if not article_title:
+                if best_chunk.get("article") is not None:
+                    article_title = f"Điều {best_chunk.get('article')}"
+                elif best_chunk.get("chapter_title"):
+                    article_title = best_chunk.get("chapter_title")
+                elif best_chunk.get("part_title"):
+                    article_title = best_chunk.get("part_title")
+                else:
+                    article_title = "Quy định liên quan"
+
+            key = (
+                best_chunk.get("part"),
+                best_chunk.get("chapter"),
+                best_chunk.get("article"),
+                best_chunk.get("page_start"),
+                best_chunk.get("page_end"),
+            )
+            if key in seen:
+                src = seen[key]
+                if clean_claim not in src["claims"]:
+                    src["claims"].append(clean_claim)
+                if best_evidence not in src["evidence"]:
+                    src["evidence"].append(best_evidence)
+            else:
+                src = {
+                    "part": best_chunk.get("part"),
+                    "chapter": best_chunk.get("chapter"),
+                    "article": best_chunk.get("article"),
+                    "part_title": best_chunk.get("part_title"),
+                    "chapter_title": best_chunk.get("chapter_title"),
+                    "article_title": article_title,
+                    "clauses": sorted(set(best_chunk.get("clauses") or [])),
+                    "page_start": best_chunk.get("page_start"),
+                    "page_end": best_chunk.get("page_end"),
+                    "claims": [clean_claim],
+                    "evidence": [best_evidence],
+                }
+                seen[key] = src
+                verified_sources.append(src)
+
+    return verified_sources
 
 
 def chat_with_sources(
@@ -554,6 +827,10 @@ def chat_with_sources(
         print("\n========== END DEBUG CONTEXT CHUNKS ==========\n")
 
     context = build_context(context_chunks)
+    if DEBUG_RAG:
+        print("\n========== DEBUG CONTEXT SENT TO LLM ==========")
+        print(context)
+        print("========== END DEBUG CONTEXT SENT TO LLM ==========\n")
     answer = generate_answer(question, context, history=history)
 
     refusal_phrases = (

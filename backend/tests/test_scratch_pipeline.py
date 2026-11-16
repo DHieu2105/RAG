@@ -346,7 +346,7 @@ def test_chat_with_sources_generates_answer_and_returns_sources() -> None:
         ),
         patch(
             "app.rag.from_scratch.pipeline.generate_answer",
-            return_value="Sinh viên thuộc đối tượng chính sách được miễn giảm học phí.",
+            return_value="- Sinh viên thuộc đối tượng chính sách được miễn giảm học phí.\n- Sinh viên được hưởng trợ cấp xã hội.",
         ) as mocked_generate,
     ):
         response = chat_with_sources(
@@ -358,7 +358,7 @@ def test_chat_with_sources_generates_answer_and_returns_sources() -> None:
 
     assert (
         response["answer"]
-        == "Sinh viên thuộc đối tượng chính sách được miễn giảm học phí."
+        == "- Sinh viên thuộc đối tượng chính sách được miễn giảm học phí.\n- Sinh viên được hưởng trợ cấp xã hội."
     )
     assert len(response["sources"]) == 2
     assert response["sources"][0]["article"] == 3
@@ -487,7 +487,7 @@ def test_chat_builds_context_and_generates_answer() -> None:
 
     with patch(
         "app.rag.from_scratch.pipeline.generate_answer",
-        return_value="Câu trả lời từ Ollama.",
+        return_value="Câu trả lời từ Gemini.",
     ) as mocked_generate_answer:
         answer = chat(
             "Khi nào sinh viên bị cảnh báo học tập?",
@@ -496,7 +496,7 @@ def test_chat_builds_context_and_generates_answer() -> None:
             vectors,
         )
 
-    assert answer == "Câu trả lời từ Ollama."
+    assert answer == "Câu trả lời từ Gemini."
     mocked_generate_answer.assert_called_once()
     question, context = mocked_generate_answer.call_args.args
     assert question == "Khi nào sinh viên bị cảnh báo học tập?"
@@ -507,7 +507,7 @@ def test_chat_builds_context_and_generates_answer() -> None:
     assert "Sinh viên bị cảnh báo học tập." in context
 
 
-def test_chat_skips_ollama_when_nothing_is_retrieved() -> None:
+def test_chat_skips_llm_when_nothing_is_retrieved() -> None:
     chunks = [
         {
             "article": 11,
@@ -536,5 +536,5 @@ def test_chat_skips_ollama_when_nothing_is_retrieved() -> None:
 
 if __name__ == "__main__":
     test_chat_builds_context_and_generates_answer()
-    test_chat_skips_ollama_when_nothing_is_retrieved()
+    test_chat_skips_llm_when_nothing_is_retrieved()
     print("All tests passed!")
