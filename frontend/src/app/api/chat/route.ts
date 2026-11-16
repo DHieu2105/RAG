@@ -86,7 +86,7 @@ export async function POST(request: Request) {
     );
   } catch {
     return NextResponse.json(
-      { detail: "Không thể kết nối tới máy xử lý. Hãy kiểm tra backend và Cloudflare Tunnel." },
+      { detail: "Không thể kết nối tới máy chủ backend. Vui lòng kiểm tra lại dịch vụ backend hoặc thử lại sau giây lát." },
       { status: 502 },
     );
   }

@@ -1,16 +1,40 @@
 """Persist and restore the from-scratch TF-IDF index as JSON."""
 
 import json
+import os
 from pathlib import Path
 from typing import Any
-
-from app.rag.loader import BASE_DIR
 
 from .embeddings import TfidfVectorizer
 
 
 INDEX_VERSION = 1
-INDEX_PATH = BASE_DIR / "data" / "processed" / "tfidf_index.json"
+
+
+def _find_index_path() -> Path:
+    """Resolve the index path across local runs, monorepo, and Vercel serverless."""
+    env_path = os.getenv("UNIGUIDE_INDEX_PATH", "").strip()
+    if env_path:
+        custom_path = Path(env_path)
+        if custom_path.exists():
+            return custom_path
+
+    here = Path(__file__).resolve()
+    candidates = [
+        # Inside backend/data (Vercel Root Directory = backend)
+        here.parents[3] / "data" / "processed" / "tfidf_index.json",
+        # In repository root data/ (local development)
+        here.parents[4] / "data" / "processed" / "tfidf_index.json",
+        # Current working directory
+        Path.cwd() / "data" / "processed" / "tfidf_index.json",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+INDEX_PATH = _find_index_path()
 
 
 def save_index(

@@ -7,8 +7,7 @@ from typing import Any
 import unicodedata
 from enum import Enum
 
-from app.rag.loader import PDF_PATH, load_pdf
-
+# Lazy import inside build_index() avoids loading pymupdf during normal production serving.
 from .bm25 import BM25Index, build_bm25_index
 from .chunker import structure_chunk
 from .context_builder import build_context
@@ -102,6 +101,8 @@ SUPPORTED_RETRIEVAL_MODES = {
 
 def build_index():
     """Build an in-memory TF-IDF index from the student handbook PDF."""
+    from app.rag.loader import PDF_PATH, load_pdf
+
     pages = load_pdf(PDF_PATH)
     blocks = preprocess_pages(pages)
     chunks = structure_chunk(blocks)
