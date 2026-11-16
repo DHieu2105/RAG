@@ -43,6 +43,7 @@ app.include_router(
 )
 
 
+@app.get("/", tags=["Health"])
 @app.get("/health", tags=["Health"])
 def health_check() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"status": "ok", "service": "UniGuide AI API"}
